@@ -1,5 +1,10 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Anton, Geist, Geist_Mono } from "next/font/google";
+
+import { AppSidebar } from "@/components/app-sidebar";
+import { SiteHeader } from "@/components/site-header";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -12,8 +17,15 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+// Condensed display face standing in for Ploy's FK Screamer headlines.
+const anton = Anton({
+  variable: "--font-anton",
+  weight: "400",
+  subsets: ["latin"],
+});
+
 export const metadata: Metadata = {
-  title: "AI Ads",
+  title: { default: "Ploy", template: "%s · Ploy" },
   description: "Portrait ad creatives from your store",
 };
 
@@ -21,9 +33,19 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} ${anton.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full">
+        <TooltipProvider>
+          <SidebarProvider>
+            <AppSidebar />
+            <SidebarInset>
+              <SiteHeader />
+              {children}
+            </SidebarInset>
+          </SidebarProvider>
+        </TooltipProvider>
+      </body>
     </html>
   );
 }
