@@ -27,6 +27,20 @@ function isPrivateHost(host: string): boolean {
   return false;
 }
 
+/** True for public https/http URLs; used before fetching URLs found inside pages. */
+export function isPublicHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "https:" || url.protocol === "http:") &&
+      url.hostname.includes(".") &&
+      !isPrivateHost(url.hostname.toLowerCase())
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Accepts "loopycases.com", "www.loopycases.com/..." or a full URL. */
 export function normalizeStoreUrl(input: string): URL {
   const trimmed = input.trim();

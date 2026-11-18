@@ -1,17 +1,16 @@
+import { findSiteProducts, findSiteServices, photosForPicks } from "./catalog";
 import { streamInsights, type Insights } from "./insights";
+import { classifyOffering } from "./offering";
+import { firecrawlClient, researchPage, type PageResearch } from "./page";
+import { detectShopify, fetchShopifyCatalog, type ShopifyStore } from "./shopify";
 import {
-  findSiteProducts,
-  firecrawlClient,
-  scrapeWithFetch,
-  scrapeWithFirecrawl,
-  type PageResearch,
-} from "./page";
-import { detectShopify, fetchShopifyCatalog } from "./shopify";
-import {
+  MAX_PRODUCT_TYPES,
   STEP_LABELS,
   STEP_ORDER,
   type BrandKit,
+  type Offering,
   type Product,
+  type ProductType,
   type ResearchNotice,
   type ResearchStep,
   type SelectedProduct,
@@ -28,17 +27,27 @@ export type ResearchEmitter = {
 
 /** Partial model output arrives many times a second; send the kit at most this often. */
 const KIT_THROTTLE_MS = 150;
+/** Hero items shown per product type. */
+const MAX_ITEMS_PER_TYPE = 2;
+/** Extra page reads for picks without photos (Firecrawl's free plan allows ~15/minute). */
+const MAX_PHOTO_FETCHES = 4;
 
 /**
- * URL → brand kit. Store detection, the homepage read and the catalog load
- * run in parallel and stream their results as soon as each lands; the model
- * then reads everything once to infer value prop, audience and voice and to
- * pick products. Each step degrades on its own, so one failing source never
- * blanks the whole kit.
+ * URL → brand kit.
+ *
+ * 1. In parallel: Shopify detection (+ its catalog) and the homepage read
+ *    (Firecrawl branding, HTML extractor for gaps, navbar and footer).
+ * 2. A quick model call decides whether the business sells goods or services.
+ * 3. The catalog follows from that: Shopify's /products.json, one product
+ *    page per navbar category, or the site's service pages.
+ * 4. One model call reads everything: value prop, audience, voice, and the
+ *    catalog grouped into at most 10 types with hero picks for each.
+ *
+ * Each step degrades on its own, so one failing source never blanks the kit.
  */
 export async function runResearch(input: string, emit: ResearchEmitter): Promise<void> {
-  const setStep = (id: StepId, status: StepStatus, detail?: string) =>
-    emit.step({ id, label: STEP_LABELS[id], status, detail });
+  const setStep = (id: StepId, status: StepStatus, detail?: string, label?: string) =>
+    emit.step({ id, label: label ?? STEP_LABELS[id], status, detail });
 
   let url: URL;
   try {
@@ -57,34 +66,40 @@ export async function runResearch(input: string, emit: ResearchEmitter): Promise
     logoCandidates: [],
     colors: [],
     fonts: [],
+    productTypes: [],
     products: [],
   };
   const sendKit = () => emit.kit(structuredClone(kit));
 
-  for (const id of STEP_ORDER) setStep(id, id === "insights" ? "pending" : "running");
+  for (const id of STEP_ORDER) {
+    setStep(id, id === "detect" || id === "brand" ? "running" : "pending");
+  }
   sendKit();
 
   const fc = firecrawlClient();
 
-  // 1. Platform detection decides how products are loaded.
-  const shopifyPromise = detectShopify(url);
+  // 1a. Platform detection; a Shopify catalog starts loading right away.
+  const shopifyPromise: Promise<ShopifyStore | null> = detectShopify(url).then((shopify) => {
+    kit.platform = shopify ? "shopify" : "website";
+    if (shopify?.name) kit.name ??= shopify.name;
+    sendKit();
+    setStep("detect", "done", shopify ? "Shopify store detected" : "Website (not a Shopify store)");
+    return shopify;
+  });
+  const shopifyCatalog = shopifyPromise.then((shopify) =>
+    shopify
+      ? fetchShopifyCatalog(shopify).catch((error) => {
+          console.error("[research] shopify catalog failed", error);
+          return null;
+        })
+      : null,
+  );
 
-  // 2. Homepage: Firecrawl's brand extractor, falling back to reading the HTML ourselves.
-  const pagePromise: Promise<PageResearch | null> = (async () => {
-    if (fc) {
-      try {
-        return await scrapeWithFirecrawl(fc, url);
-      } catch (error) {
-        console.error("[research] firecrawl scrape failed", error);
-      }
-    }
-    try {
-      return await scrapeWithFetch(url);
-    } catch (error) {
-      console.error("[research] html fallback failed", error);
-      return null;
-    }
-  })();
+  // 1b. Homepage: brand extractor, HTML extractor for gaps, navbar and footer.
+  const pagePromise: Promise<PageResearch | null> = researchPage(fc, url).catch((error) => {
+    console.error("[research] page research failed", error);
+    return null;
+  });
 
   const brandStep = pagePromise.then((page) => {
     if (!page) {
@@ -98,64 +113,103 @@ export async function runResearch(input: string, emit: ResearchEmitter): Promise
     kit.fonts = page.fonts;
     sendKit();
 
-    const found = [
-      page.logo ? "logo" : null,
-      `${page.colors.length} colors`,
-      `${page.fonts.length} fonts`,
-    ]
-      .filter(Boolean)
-      .join(", ");
-    const degraded = page.source === "html" || !page.logo || page.colors.length === 0;
+    const logo = page.hasRealLogo
+      ? `logo${page.logoVia && page.logoVia !== "brand extractor" ? ` (${page.logoVia})` : ""}`
+      : page.logo
+        ? "an icon only, no full logo"
+        : "no logo";
+    const found = `${logo}, ${page.colors.length} colors, ${page.fonts.length} fonts`;
+    const degraded = page.source === "html" || !page.hasRealLogo || page.colors.length === 0;
     setStep(
       "brand",
       degraded ? "warning" : "done",
       page.source === "html"
-        ? `Found ${found} from the page markup (brand extractor unavailable)`
-        : `Found ${found}`,
+        ? `Found ${found} from the page's HTML (brand extractor unavailable)`
+        : page.filled.length
+          ? `Found ${found}; filled gaps from the HTML: ${page.filled.join(", ")}`
+          : `Found ${found}`,
     );
     return page;
   });
 
+  // 2. Goods or services decides how the catalog is found.
+  const offeringStep: Promise<Offering> = (async () => {
+    const [page, shopify] = await Promise.all([brandStep, shopifyPromise]);
+    setStep("offering", "running");
+    try {
+      const { offering, reason } = await classifyOffering({
+        domain: kit.domain,
+        page,
+        isShopify: Boolean(shopify),
+      });
+      kit.offering = offering;
+      kit.offeringReason = reason;
+      sendKit();
+      setStep("offering", "done", `Sells ${offering}: ${reason}`);
+      return offering;
+    } catch (error) {
+      console.error("[research] offering classification failed", error);
+      kit.offering = "goods";
+      sendKit();
+      setStep("offering", "warning", "Couldn't tell; treating it as a goods business");
+      return "goods";
+    }
+  })();
+
+  // 3. The catalog: products or services, always with the site's own photos.
   const catalogStep: Promise<Product[]> = (async () => {
-    const shopify = await shopifyPromise;
-    kit.platform = shopify ? "shopify" : "website";
-    if (shopify?.name) kit.name ??= shopify.name;
-    sendKit();
-    setStep("detect", "done", shopify ? "Shopify store detected" : "Website (not a Shopify store)");
+    const [offering, page] = await Promise.all([offeringStep, pagePromise]);
+    const noun = offering === "services" ? "services" : "products";
+    const label = offering === "services" ? "Finding services and their photos" : STEP_LABELS.catalog;
+    setStep("catalog", "running", undefined, label);
 
     try {
-      if (shopify) {
-        const { products, total } = await fetchShopifyCatalog(shopify);
-        kit.catalogSize = total;
+      // Goods: a Shopify catalog is the business's own full list. Services:
+      // ignore it, since a service business's Shopify shop is usually its
+      // retail side (European Wax Center sells serums there, not waxing).
+      const shopify = offering === "goods" ? await shopifyCatalog : null;
+      if (shopify && shopify.products.length > 0) {
+        kit.catalogSize = shopify.total;
         sendKit();
-        setStep("catalog", "done", `${total} products in the catalog`);
-        return products;
+        setStep("catalog", "done", `${shopify.total} ${noun} in the Shopify catalog`, label);
+        return shopify.products;
       }
 
-      const page = await pagePromise;
       if (!fc || !page) {
-        setStep("catalog", "warning", "Couldn't look for product pages on this site");
+        setStep("catalog", "warning", `Couldn't look for ${noun} on this site`, label);
         return [];
       }
-      const products = await findSiteProducts(fc, url, page.links);
-      kit.catalogSize = products.length;
+      const retail = offering === "services" ? await shopifyCatalog : null;
+      const items =
+        offering === "services"
+          ? await findSiteServices(
+              fc,
+              url,
+              page,
+              retail?.products.flatMap((p) => p.images) ?? [],
+            )
+          : await findSiteProducts(fc, url, page);
+      kit.catalogSize = items.length;
       sendKit();
+      const withPhotos = items.filter((i) => i.images.length > 0).length;
       setStep(
         "catalog",
-        products.length ? "done" : "warning",
-        products.length
-          ? `Read ${products.length} product pages`
-          : "No product pages found; you can add products by link later",
+        items.length ? "done" : "warning",
+        items.length
+          ? `Found ${items.length} ${noun} (${withPhotos} with photos from the site)`
+          : `No ${noun} found; you can add them by link later`,
+        label,
       );
-      return products;
+      return items;
     } catch (error) {
       console.error("[research] catalog failed", error);
-      setStep("catalog", "warning", "Couldn't load the product catalog");
+      setStep("catalog", "warning", `Couldn't load the ${noun}`, label);
       return [];
     }
   })();
 
-  const [page, products] = await Promise.all([brandStep, catalogStep]);
+  const [page, products, offering] = await Promise.all([brandStep, catalogStep, offeringStep]);
+  const noun = offering === "services" ? "service" : "product";
 
   if (!page && products.length === 0) {
     setStep("insights", "error", "Nothing to analyze");
@@ -166,7 +220,7 @@ export async function runResearch(input: string, emit: ResearchEmitter): Promise
     return;
   }
 
-  // 3. The model reads everything once: value prop, audience, voice, product picks.
+  // 4. One model call: value prop, audience, voice, and up to 10 types with picks.
   setStep("insights", "running");
   const byId = new Map(products.map((p) => [p.id, p]));
   const applyInsights = (insights: DeepPartial<Insights>) => {
@@ -186,16 +240,31 @@ export async function runResearch(input: string, emit: ResearchEmitter): Promise
         sampleLine: insights.voice.sampleLine,
       };
     }
-    kit.products = (insights.products ?? []).flatMap((pick): SelectedProduct[] => {
-      const product = pick?.id ? byId.get(pick.id) : undefined;
-      if (!product) return []; // drop anything not in the real catalog
-      return [{ ...product, reason: pick?.reason, features: strings(pick?.features) }];
-    });
-    if (kit.products.length) kit.productsPickedBy = "ai";
+
+    const types: ProductType[] = [];
+    const picks: SelectedProduct[] = [];
+    const used = new Set<string>();
+    for (const type of insights.productTypes ?? []) {
+      if (!type?.name || types.length >= MAX_PRODUCT_TYPES) continue;
+      const items = (type.items ?? []).flatMap((pick): SelectedProduct[] => {
+        const product = pick?.id ? byId.get(pick.id) : undefined;
+        if (!product || used.has(product.id)) return []; // only real, unrepeated catalog items
+        used.add(product.id);
+        return [
+          { ...product, reason: pick?.reason, features: strings(pick?.features), typeName: type.name },
+        ];
+      });
+      if (items.length === 0) continue;
+      types.push({ name: type.name, summary: type.summary });
+      picks.push(...items.slice(0, MAX_ITEMS_PER_TYPE));
+    }
+    kit.productTypes = types;
+    kit.products = picks;
+    if (picks.length) kit.productsPickedBy = "ai";
   };
 
   try {
-    const result = streamInsights({ domain: kit.domain, page, products });
+    const result = streamInsights({ domain: kit.domain, page, products, offering });
     let lastSent = 0;
     for await (const partial of result.partialOutputStream) {
       applyInsights(partial as DeepPartial<Insights>);
@@ -207,19 +276,35 @@ export async function runResearch(input: string, emit: ResearchEmitter): Promise
     applyInsights(await result.output);
     sendKit();
 
-    const picked = kit.products.length;
+    // Picks known only from a nav link have no photos yet; read their pages.
+    const unphotographed = kit.products
+      .filter((p) => p.images.length === 0 && !p.url.includes("#"))
+      .slice(0, MAX_PHOTO_FETCHES);
+    if (fc && unphotographed.length > 0) {
+      setStep("insights", "running", `Getting photos for ${unphotographed.length} picks`);
+      const retail = (await shopifyCatalog)?.products.flatMap((p) => p.images) ?? [];
+      const photos = await photosForPicks(fc, unphotographed, retail);
+      kit.products = kit.products.map((p) =>
+        photos.has(p.url) ? { ...p, images: photos.get(p.url)! } : p,
+      );
+      sendKit();
+    }
+
+    const typeCount = kit.productTypes.length;
     setStep(
       "insights",
-      picked || products.length === 0 ? "done" : "warning",
+      kit.products.length || products.length === 0 ? "done" : "warning",
       products.length === 0
-        ? "Brand analyzed (no products to pick from)"
-        : `Picked ${picked} product${picked === 1 ? "" : "s"} to feature`,
+        ? `Brand analyzed (no ${noun}s to pick from)`
+        : `Grouped ${products.length} ${noun}s into ${typeCount} type${typeCount === 1 ? "" : "s"}; picked ${kit.products.length} to feature`,
     );
   } catch (error) {
     console.error("[research] insights failed", error);
     setStep("insights", "error", "The brand analysis failed");
     if (kit.products.length === 0 && products.length > 0) {
-      kit.products = defaultPicks(products);
+      const fallback = defaultPicks(products);
+      kit.productTypes = fallback.types;
+      kit.products = fallback.picks;
       kit.productsPickedBy = "default";
       sendKit();
     }
@@ -227,32 +312,32 @@ export async function runResearch(input: string, emit: ResearchEmitter): Promise
       level: "warning",
       message:
         products.length > 0
-          ? "We pulled the logo, colors, fonts and products, but couldn't write the value proposition, audience and voice, so products are a default pick. Try again."
+          ? `We pulled the logo, colors, fonts and ${noun}s, but couldn't write the value proposition, audience and voice, so ${noun}s are grouped by their listed type. Try again.`
           : "We pulled the logo, colors and fonts, but couldn't write the value proposition, audience and voice. Try again.",
     });
   }
 }
 
 /**
- * Used only when the model is unavailable: the first products with the most
- * photography, one per product type where possible, so ads still have variety.
+ * Used only when the model is unavailable: group by the catalog's own type
+ * field (largest first, at most 10) and pick the item with the most photos.
  */
-function defaultPicks(products: Product[], count = 4): SelectedProduct[] {
-  const ranked = [...products].sort((a, b) => b.images.length - a.images.length);
-  const picks: Product[] = [];
-  const types = new Set<string | undefined>();
-  for (const p of ranked) {
-    if (picks.length >= count) break;
-    if (!types.has(p.productType)) {
-      picks.push(p);
-      types.add(p.productType);
-    }
+function defaultPicks(products: Product[]): { types: ProductType[]; picks: SelectedProduct[] } {
+  const groups = new Map<string, Product[]>();
+  for (const p of products) {
+    const type = p.productType?.trim() || "Other";
+    groups.set(type, [...(groups.get(type) ?? []), p]);
   }
-  for (const p of ranked) {
-    if (picks.length >= count) break;
-    if (!picks.includes(p)) picks.push(p);
-  }
-  return picks.map((p) => ({ ...p, features: [] }));
+  const ranked = [...groups.entries()]
+    .sort((a, b) => b[1].length - a[1].length)
+    .slice(0, MAX_PRODUCT_TYPES);
+  return {
+    types: ranked.map(([name]) => ({ name })),
+    picks: ranked.map(([name, items]) => {
+      const best = [...items].sort((a, b) => b.images.length - a.images.length)[0];
+      return { ...best, features: [], typeName: name };
+    }),
+  };
 }
 
 type DeepPartial<T> = T extends object ? { [K in keyof T]?: DeepPartial<T[K]> } : T;

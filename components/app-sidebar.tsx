@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { Suspense } from "react";
 
 import { PloyMark } from "@/components/ploy-logo";
 import {
@@ -36,10 +37,7 @@ function NavLinks({ items, activeHref }: { items: NavItem[]; activeHref?: string
             tooltip={item.title}
             className={navButtonClass}
           >
-            <Link
-              href={item.href}
-              onClick={() => isMobile && setOpenMobile(false)}
-            >
+            <Link href={item.href} onClick={() => isMobile && setOpenMobile(false)}>
               <item.icon />
               <span>{item.title}</span>
             </Link>
@@ -50,10 +48,25 @@ function NavLinks({ items, activeHref }: { items: NavItem[]; activeHref?: string
   );
 }
 
-export function AppSidebar() {
-  const pathname = usePathname();
-  const activeHref = navItemFor(pathname)?.href;
+/**
+ * Reading the URL is request-time data under Cache Components, so the
+ * highlighted links render inside <Suspense>; the fallback is the same links
+ * without a highlight, so the prerendered shell never shows an empty sidebar.
+ */
+function ActiveNavLinks({ items }: { items: NavItem[] }) {
+  const activeHref = navItemFor(usePathname())?.href;
+  return <NavLinks items={items} activeHref={activeHref} />;
+}
 
+function Nav({ items }: { items: NavItem[] }) {
+  return (
+    <Suspense fallback={<NavLinks items={items} />}>
+      <ActiveNavLinks items={items} />
+    </Suspense>
+  );
+}
+
+export function AppSidebar() {
   return (
     <Sidebar variant="inset" collapsible="icon">
       <SidebarHeader>
@@ -67,9 +80,7 @@ export function AppSidebar() {
             >
               <Link href="/">
                 <PloyMark />
-                <span className="text-lg font-semibold tracking-tight">
-                  Ploy Ads
-                </span>
+                <span className="text-lg font-semibold tracking-tight">Ploy Ads</span>
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
@@ -79,13 +90,13 @@ export function AppSidebar() {
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupContent>
-            <NavLinks items={mainNav} activeHref={activeHref} />
+            <Nav items={mainNav} />
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
 
       <SidebarFooter>
-        <NavLinks items={footerNav} activeHref={activeHref} />
+        <Nav items={footerNav} />
       </SidebarFooter>
 
       <SidebarRail />

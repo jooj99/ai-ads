@@ -1,4 +1,7 @@
-import { BrandResearch } from "@/components/research/brand-research";
+import Image from "next/image";
+
+import { StartCampaignForm } from "@/components/campaigns/start-campaign-form";
+import balloons from "@/public/brand/ploy-balloons.webp";
 
 export default function HomePage() {
   return (
@@ -8,11 +11,23 @@ export default function HomePage() {
           From store to ads
         </h1>
         <p className="max-w-xl text-muted-foreground">
-          Paste your store&apos;s URL. The agent reads your brand and catalog, then builds the
-          brand kit your ads are made from.
+          Paste your store&apos;s URL to start a campaign. The agent reads your brand and catalog,
+          builds the brand kit, and picks the products your ads are made from.
         </p>
       </div>
-      <BrandResearch />
+
+      <StartCampaignForm />
+
+      {/* Ploy's inflatable wordmark, from the foot of ploy.ai, fills the space below. */}
+      <div className="pointer-events-none mt-auto flex justify-center" aria-hidden="true">
+        <Image
+          src={balloons}
+          alt=""
+          priority
+          sizes="(min-width: 1024px) 768px, 100vw"
+          className="-my-[8%] w-full max-w-3xl select-none"
+        />
+      </div>
     </div>
   );
 }

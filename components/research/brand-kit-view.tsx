@@ -276,25 +276,53 @@ function FontRow({ font }: { font: BrandFont }) {
 }
 
 function ProductPicks({ kit, pending }: { kit: BrandKit; pending: boolean }) {
-  const subtitle = kit.catalogSize
-    ? `Picked ${kit.products.length} of ${kit.catalogSize} products to feature in ads`
-    : "Products to feature in ads";
+  const services = kit.offering === "services";
+  const noun = services ? "service" : "product";
+  const types = kit.productTypes;
+  const subtitle =
+    types.length > 0
+      ? `${types.length} ${noun} type${types.length === 1 ? "" : "s"}${
+          kit.catalogSize ? ` from ${kit.catalogSize} ${noun}s` : ""
+        } · ${kit.products.length} hero pick${kit.products.length === 1 ? "" : "s"} to feature in ads`
+      : `The ${noun}s to feature in ads, grouped by type`;
+  // Show picks in type order, so the grid reads type by type.
+  const order = new Map(types.map((t, i) => [t.name, i]));
+  const products = [...kit.products].sort(
+    (a, b) => (order.get(a.typeName ?? "") ?? 99) - (order.get(b.typeName ?? "") ?? 99),
+  );
 
   return (
     <Card className="gap-4">
       <CardHeader className="flex flex-row items-start justify-between gap-2">
         <div className="flex flex-col gap-1">
-          <CardTitle>Product selection</CardTitle>
+          <CardTitle className="flex items-center gap-2">
+            Product selection
+            {services && <Badge variant="secondary">Services</Badge>}
+          </CardTitle>
           <p className="text-sm text-muted-foreground">{subtitle}</p>
         </div>
         <Badge variant="outline" className="font-normal text-muted-foreground">
-          {kit.productsPickedBy === "default" ? "From store · default pick" : "From store · picked by AI"}
+          {kit.productsPickedBy === "default"
+            ? "From site · grouped by listed type"
+            : "From site · grouped by AI"}
         </Badge>
       </CardHeader>
-      <CardContent>
-        {kit.products.length ? (
-          <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {kit.products.map((product) => (
+      <CardContent className="flex flex-col gap-5">
+        {types.length > 0 && (
+          <ul className="flex flex-wrap gap-1.5" aria-label={`${noun} types`}>
+            {types.map((type, i) => (
+              <li key={type.name}>
+                <Badge variant="outline" className="gap-1.5 py-1" title={type.summary}>
+                  <span className="text-muted-foreground tabular-nums">{i + 1}</span>
+                  {type.name}
+                </Badge>
+              </li>
+            ))}
+          </ul>
+        )}
+        {products.length ? (
+          <ul className="grid gap-x-4 gap-y-6 sm:grid-cols-2 lg:grid-cols-3">
+            {products.map((product) => (
               <ProductCard key={product.id} product={product} />
             ))}
           </ul>
@@ -309,7 +337,8 @@ function ProductPicks({ kit, pending }: { kit: BrandKit; pending: boolean }) {
           </div>
         ) : (
           <Empty>
-            No products could be loaded from this site. Product-link entry is coming with the next step.
+            No {noun}s could be loaded from this site. Adding them by link is coming with the next
+            step.
           </Empty>
         )}
       </CardContent>
@@ -351,6 +380,11 @@ function ProductCard({ product }: { product: SelectedProduct }) {
           </div>
         )}
       </a>
+      {product.typeName && (
+        <span className="-mb-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          {product.typeName}
+        </span>
+      )}
       <div className="flex items-start justify-between gap-2">
         <p className="font-medium leading-snug">{product.title}</p>
         {product.price && (
