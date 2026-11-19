@@ -108,11 +108,14 @@ export function streamInsights({
   page,
   products,
   offering,
+  audiencePages = [],
 }: {
   domain: string;
   page: PageResearch | null;
   products: Product[];
   offering: Offering;
+  /** Labels of the site's pages about who it serves, e.g. "Hospitals", "For agencies". */
+  audiencePages?: string[];
 }) {
   const n = NOUNS[offering];
 
@@ -129,6 +132,13 @@ export function streamInsights({
     "## Footer",
     page?.footer || "(none found)",
     "",
+    ...(audiencePages.length
+      ? [
+          "## Who the site says it serves (its industry and customer pages; use for audience, these are not offerings)",
+          audiencePages.join(" · "),
+          "",
+        ]
+      : []),
     "## Homepage content",
     page?.content ? page.content.slice(0, MAX_CONTENT_CHARS) : "(The homepage could not be read.)",
     "",

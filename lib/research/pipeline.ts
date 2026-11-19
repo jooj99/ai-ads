@@ -1,4 +1,4 @@
-import { findSiteProducts, findSiteServices, photosForPicks } from "./catalog";
+import { findSiteProducts, findSiteServices, photosForPicks, pickSiteLinks } from "./catalog";
 import { streamInsights, type Insights } from "./insights";
 import { classifyOffering } from "./offering";
 import { firecrawlClient, researchPage, type PageResearch } from "./page";
@@ -158,6 +158,8 @@ export async function runResearch(input: string, emit: ResearchEmitter): Promise
   })();
 
   // 3. The catalog: products or services, always with the site's own photos.
+  /** Labels of pages about who the business serves ("Hospitals", "For agencies"). */
+  let audiencePages: string[] = [];
   const catalogStep: Promise<Product[]> = (async () => {
     const [offering, page] = await Promise.all([offeringStep, pagePromise]);
     const noun = offering === "services" ? "services" : "products";
@@ -180,6 +182,21 @@ export async function runResearch(input: string, emit: ResearchEmitter): Promise
         setStep("catalog", "warning", `Couldn't look for ${noun} on this site`, label);
         return [];
       }
+
+      // A small model picks which of the site's links to read; null means
+      // it failed or found nothing, and the keyword rules choose instead.
+      setStep("catalog", "running", "Choosing which pages to read", label);
+      const picks = await pickSiteLinks({ url, page, offering });
+      audiencePages = picks?.audience.map((l) => l.text).filter(Boolean) ?? [];
+      setStep(
+        "catalog",
+        "running",
+        picks
+          ? `Reading ${picks.offerings.length} ${noun} page${picks.offerings.length === 1 ? "" : "s"}${picks.indexes.length ? ` and ${picks.indexes.length} index page${picks.indexes.length === 1 ? "" : "s"}` : ""}`
+          : `Looking for ${noun} pages`,
+        label,
+      );
+
       const retail = offering === "services" ? await shopifyCatalog : null;
       const items =
         offering === "services"
@@ -188,8 +205,9 @@ export async function runResearch(input: string, emit: ResearchEmitter): Promise
               url,
               page,
               retail?.products.flatMap((p) => p.images) ?? [],
+              picks,
             )
-          : await findSiteProducts(fc, url, page);
+          : await findSiteProducts(fc, url, page, picks);
       kit.catalogSize = items.length;
       sendKit();
       const withPhotos = items.filter((i) => i.images.length > 0).length;
@@ -265,7 +283,7 @@ export async function runResearch(input: string, emit: ResearchEmitter): Promise
   };
 
   try {
-    const result = streamInsights({ domain: kit.domain, page, products, offering });
+    const result = streamInsights({ domain: kit.domain, page, products, offering, audiencePages });
     let lastSent = 0;
     for await (const partial of result.partialOutputStream) {
       applyInsights(partial as DeepPartial<Insights>);

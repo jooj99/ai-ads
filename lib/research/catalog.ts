@@ -1,14 +1,17 @@
 import type Firecrawl from "@mendable/firecrawl-js";
 
 import { fetchHtml, imagesFromHtml, type LayoutLink } from "./html-signals";
+import { classifyLinks, type CandidateLink, type LinkPicks, type PickedLink } from "./links";
 import { DAY_MS, withRateLimitRetry, type PageResearch } from "./page";
-import { MAX_PRODUCT_TYPES, type Product } from "./types";
+import { MAX_PRODUCT_TYPES, type Offering, type Product } from "./types";
 import { absoluteUrl } from "./url";
 
 /**
- * Catalog discovery for sites without Shopify's /products.json: goods are
- * found one product page per navbar category, services through the site's
- * service pages. Either way each item keeps the site's own photos.
+ * Catalog discovery for sites without Shopify's /products.json. A small model
+ * first sorts the site's links into offering pages, offering indexes and
+ * audience pages (`pickSiteLinks`); goods and services are then read from
+ * those pages. When that call fails, the keyword rules below choose instead.
+ * Either way each item keeps the site's own photos.
  */
 
 const PRODUCT_PATH = /\/(products?|p|item|items|shop)\/[^/?#]+/i;
@@ -21,18 +24,101 @@ const SERVICE_INDEX = /services|treatments|what we do|what-we-do|our menu|pricin
 
 /** Firecrawl calls per research run stay under the free plan's ~15/minute. */
 const MAX_PAGE_READS = 8;
+/** Links offered to the link picker: labeled navbar/footer links first, then page links. */
+const MAX_PICKER_LINKS = 150;
+
+// --- link picking -----------------------------------------------------------
+
+/**
+ * Asks the small model which of the homepage's links are offerings, offering
+ * indexes or audience pages. Returns null when the call fails or finds no
+ * offerings or indexes, so callers fall back to the keyword rules.
+ */
+export async function pickSiteLinks({
+  url,
+  page,
+  offering,
+}: {
+  url: URL;
+  page: PageResearch;
+  offering: Offering;
+}): Promise<LinkPicks | null> {
+  const candidates = pickerCandidates(url, page);
+  if (candidates.length === 0) return null;
+  try {
+    const picks = await classifyLinks({
+      domain: bareHost(url.href),
+      offering,
+      navigation: page.navigation,
+      candidates,
+    });
+    return picks.offerings.length > 0 || picks.indexes.length > 0 ? picks : null;
+  } catch (error) {
+    console.error("[research] link picking failed", error);
+    return null;
+  }
+}
+
+/** Same-site pages other than the homepage and obvious utility pages, without #fragments. */
+function pickerCandidates(url: URL, page: PageResearch): CandidateLink[] {
+  const host = bareHost(url.href);
+  const home = url.pathname.replace(/\/$/, "");
+  const seen = new Set<string>();
+  const out: CandidateLink[] = [];
+  const add = (raw: string, text: string, area: CandidateLink["area"]) => {
+    if (!isSameSite(raw, host)) return;
+    const u = new URL(raw);
+    u.hash = "";
+    const path = u.pathname.replace(/\/$/, "");
+    if (path === home || UTILITY_PATH.test(u.pathname) || FILE_PATH.test(u.pathname)) return;
+    if (seen.has(u.href)) return;
+    seen.add(u.href);
+    out.push({ url: u.href, text, area });
+  };
+  for (const l of page.layoutLinks) add(l.url, l.text, l.area);
+  for (const l of page.links) add(l, "", "page");
+  return out.slice(0, MAX_PICKER_LINKS);
+}
+
+const FILE_PATH = /\.(pdf|jpe?g|png|gif|webp|svg|zip|xml|json|txt)$/i;
+
+function toLayoutLink(link: PickedLink): LayoutLink {
+  return { text: link.text, url: link.url, area: "nav" };
+}
+
+/** True when the picker named at least one offering or index to read. */
+function hasPicks(picks: LinkPicks | null | undefined): picks is LinkPicks {
+  return Boolean(picks && (picks.offerings.length > 0 || picks.indexes.length > 0));
+}
 
 // --- goods ------------------------------------------------------------------
 
-export async function findSiteProducts(fc: Firecrawl, url: URL, page: PageResearch): Promise<Product[]> {
+export async function findSiteProducts(
+  fc: Firecrawl,
+  url: URL,
+  page: PageResearch,
+  picks: LinkPicks | null = null,
+): Promise<Product[]> {
   const host = bareHost(url.href);
   const siteLinks = unique([...page.links, ...page.layoutLinks.map((l) => l.url)]).filter((u) =>
     isSameSite(u, host),
   );
+  const picked = hasPicks(picks) ? picks : null;
 
-  // Navbar categories (/eyeglasses, /sunglasses, …) give the full range of
-  // product types; read one product page under each to cover them all.
-  const categories = categoryLinks(page.layoutLinks, host);
+  // Offering pages the picker found are products in their own right (a
+  // software module, a product line), not categories to dig under.
+  const offeringPages = picked?.offerings.map((l) => l.url) ?? [];
+  const typeOf = new Map<string, string>(
+    (picked?.offerings ?? []).flatMap((l): [string, string][] => {
+      const type = l.group ?? cleanLinkText(l.text);
+      return type ? [[l.url, type]] : [];
+    }),
+  );
+
+  // Categories (/eyeglasses, /sunglasses, …) give the full range of product
+  // types; read one product page under each to cover them all. The picker's
+  // indexes when it ran, else navbar links that look like categories.
+  const categories = picked ? picked.indexes.map(toLayoutLink) : categoryLinks(page.layoutLinks, host);
   let mapped: string[] = [];
   if (categories.length > 0) {
     const map = await withRateLimitRetry(() => fc.map(url.origin, { limit: 1000 })).catch(
@@ -41,22 +127,23 @@ export async function findSiteProducts(fc: Firecrawl, url: URL, page: PageResear
     mapped = (map?.links ?? []).map((l) => l.url).filter((u) => isSameSite(u, host));
   }
   const pool = unique([...mapped, ...siteLinks]);
-  const typeOf = new Map<string, string>();
   const perCategory: string[] = [];
   for (const category of categories) {
     const product = deepestUnder(category.url, pool);
-    if (product && !perCategory.includes(product)) {
+    if (product && !perCategory.includes(product) && !offeringPages.includes(product)) {
       perCategory.push(product);
       typeOf.set(product, category.text);
     }
   }
 
   const direct = siteLinks.filter((u) => PRODUCT_PATH.test(new URL(u).pathname));
-  let candidates = unique([...perCategory, ...direct]);
+  let candidates = unique([...offeringPages, ...perCategory, ...direct]);
 
-  // Still thin: ask Firecrawl for the products the homepage features.
+  // Still thin: ask Firecrawl for the products the homepage features. Not when
+  // the picker found offering pages: a homepage's feature lists (security,
+  // integrations) would then be mistaken for products.
   let featured: ExtractedItem[] = [];
-  if (candidates.length < 3) {
+  if (candidates.length < 3 && offeringPages.length === 0) {
     featured = await extractItems(fc, url.href, "products");
     candidates = unique([...candidates, ...sameSiteUrls(featured, url.href, host)]);
   }
@@ -65,29 +152,58 @@ export async function findSiteProducts(fc: Firecrawl, url: URL, page: PageResear
   const reads = await Promise.allSettled(
     targets.map((link) =>
       withRateLimitRetry(() =>
-        fc.scrape(link, { formats: ["product"], maxAge: DAY_MS, timeout: 45_000 }),
+        fc.scrape(link, {
+          // Offering pages may not be shop listings (a software module has no
+          // variants), so read their photos too in case the product read is empty.
+          formats: offeringPages.includes(link) ? ["product", "images"] : ["product"],
+          maxAge: DAY_MS,
+          timeout: 45_000,
+        }),
       ),
     ),
   );
 
   logFailedReads(reads, targets);
   const products = reads.flatMap((read, i): Product[] => {
-    if (read.status !== "fulfilled" || !read.value.product) return [];
-    const p = read.value.product;
+    if (read.status !== "fulfilled") return [];
+    const doc = read.value;
+    const p = doc.product;
     const link = targets[i];
     const images = unique(
-      p.variants.flatMap((v) => (v.images ?? []).map((img) => absoluteUrl(img.url, link))),
+      (p?.variants ?? []).flatMap((v) => (v.images ?? []).map((img) => absoluteUrl(img.url, link))),
     );
-    if (!p.title || images.length === 0) return [];
+    if (p?.title && images.length > 0) {
+      return [
+        {
+          id: link,
+          title: p.title,
+          url: p.url || link,
+          price: formatPrice(p.variants[0]?.price),
+          productType: typeOf.get(link) ?? p.category,
+          description: p.description?.slice(0, 600),
+          images: images.slice(0, 8),
+        },
+      ];
+    }
+
+    // An offering page that isn't a shop listing: keep it, described by its
+    // own title and meta description, with the page's photos.
+    if (!offeringPages.includes(link)) return [];
+    const meta = doc.metadata ?? {};
+    const title = p?.title || cleanTitle(meta.ogTitle ?? meta.title);
+    if (!title) return [];
     return [
       {
         id: link,
-        title: p.title,
-        url: p.url || link,
-        price: formatPrice(p.variants[0]?.price),
-        productType: typeOf.get(link) ?? p.category,
-        description: p.description?.slice(0, 600),
-        images: images.slice(0, 8),
+        title,
+        url: link,
+        price: formatPrice(p?.variants[0]?.price),
+        productType: typeOf.get(link) ?? p?.category,
+        description: (p?.description ?? meta.description ?? meta.ogDescription)?.slice(0, 600),
+        images: rankPagePhotos(
+          unique([...images, ...(doc.images ?? []).map((src) => absoluteUrl(src, link))]),
+          { title, ogImage: absoluteUrl(meta.ogImage, link), retail: new Set() },
+        ),
       },
     ];
   });
@@ -132,25 +248,48 @@ export async function findSiteServices(
   page: PageResearch,
   /** Photos of the business's retail products, which service pages cross-sell. */
   productImages: string[] = [],
+  picks: LinkPicks | null = null,
 ): Promise<Product[]> {
   const retail = new Set(productImages.map(fileName));
   const host = bareHost(url.href);
-  const labeled: LayoutLink[] = [
-    ...page.layoutLinks,
-    ...page.links.map((u): LayoutLink => ({ text: "", url: u, area: "nav" })),
-  ].filter((l) => isSameSite(l.url, host));
+  const picked = hasPicks(picks) ? picks : null;
 
-  const serviceLinks = labeled.filter((l) => {
-    const path = new URL(l.url).pathname;
-    return path !== "/" && !UTILITY_PATH.test(path) && (SERVICE_WORDS.test(l.text) || SERVICE_WORDS.test(path));
-  });
-  const typeOf = new Map(serviceLinks.filter((l) => l.text).map((l) => [l.url, l.text]));
+  let serviceLinks: LayoutLink[];
+  let index: LayoutLink | undefined;
+  const typeOf = new Map<string, string>();
+  if (picked) {
+    serviceLinks = picked.offerings.map(toLayoutLink);
+    index = picked.indexes.map(toLayoutLink)[0];
+    for (const l of picked.offerings) {
+      const type = l.group ?? cleanLinkText(l.text);
+      if (type) typeOf.set(l.url, type);
+    }
+  } else {
+    // Keyword fallback when the picker didn't run or found nothing.
+    const labeled: LayoutLink[] = [
+      ...page.layoutLinks,
+      ...page.links.map((u): LayoutLink => ({ text: "", url: u, area: "nav" })),
+    ].filter((l) => isSameSite(l.url, host));
+    serviceLinks = labeled.filter((l) => {
+      const path = new URL(l.url).pathname;
+      return path !== "/" && !UTILITY_PATH.test(path) && (SERVICE_WORDS.test(l.text) || SERVICE_WORDS.test(path));
+    });
+    index = serviceLinks.find(
+      (l) => SERVICE_INDEX.test(l.text) || SERVICE_INDEX.test(new URL(l.url).pathname),
+    );
+    for (const l of serviceLinks) if (l.text) typeOf.set(l.url, l.text);
+  }
 
-  // A services index lists everything; extract from it, else from the homepage.
-  const index = serviceLinks.find((l) => SERVICE_INDEX.test(l.text) || SERVICE_INDEX.test(new URL(l.url).pathname));
-  const extracted = await extractItems(fc, index?.url ?? url.href, "services");
+  // A services index lists everything; extract from it. Without one, extract
+  // from the homepage only when no offering pages were found: otherwise the
+  // homepage's feature lists (security, integrations) would pass as services.
+  const extractFrom = index?.url ?? (picked && serviceLinks.length > 0 ? undefined : url.href);
+  const extracted = extractFrom ? await extractItems(fc, extractFrom, "services") : [];
 
-  const targets = unique([...sameSiteUrls(extracted, url.href, host), ...serviceLinks.map((l) => l.url)])
+  const extractedUrls = sameSiteUrls(extracted, url.href, host);
+  const linkUrls = serviceLinks.map((l) => l.url);
+  // The picker's offerings are the site's own headline list, so they're read first.
+  const targets = unique(picked ? [...linkUrls, ...extractedUrls] : [...extractedUrls, ...linkUrls])
     .filter((u) => u !== index?.url && u !== url.href)
     .slice(0, MAX_PAGE_READS);
 
@@ -172,7 +311,7 @@ export async function findSiteServices(
     const hint = byUrl.get(link);
     const title = hint?.name ?? cleanTitle(meta.ogTitle ?? meta.title);
     if (!title) return [];
-    const images = rankServicePhotos(
+    const images = rankPagePhotos(
       unique((doc.images ?? []).map((src) => absoluteUrl(src, link))),
       {
         title,
@@ -246,7 +385,7 @@ export async function photosForPicks(
   reads.forEach((read, i) => {
     if (read.status !== "fulfilled") return;
     const { url, title } = picks[i];
-    const images = rankServicePhotos(
+    const images = rankPagePhotos(
       unique(read.value.images.map((src) => absoluteUrl(src, url))),
       { title, ogImage: absoluteUrl(read.value.ogImage, url), retail },
     );
@@ -263,7 +402,7 @@ const TITLE_STOPWORDS = new Set(["and", "the", "for", "with", "our", "your", "se
  * the service ("brow-shape.png" for "Eyebrow Waxing") and the page's share
  * image, then page order.
  */
-function rankServicePhotos(
+function rankPagePhotos(
   pageImages: string[],
   {
     title,
