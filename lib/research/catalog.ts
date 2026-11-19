@@ -1,6 +1,6 @@
 import type Firecrawl from "@mendable/firecrawl-js";
 
-import { fetchHtml, imagesFromHtml, type LayoutLink } from "./html-signals";
+import { fetchHtml, imagesFromHtml, isImageFragment, type LayoutLink } from "./html-signals";
 import { classifyLinks, type CandidateLink, type LinkPicks, type PickedLink } from "./links";
 import { DAY_MS, withRateLimitRetry, type PageResearch } from "./page";
 import { MAX_PRODUCT_TYPES, type Offering, type Product } from "./types";
@@ -155,7 +155,9 @@ export async function findSiteProducts(
         fc.scrape(link, {
           // Offering pages may not be shop listings (a software module has no
           // variants), so read their photos too in case the product read is empty.
-          formats: offeringPages.includes(link) ? ["product", "images"] : ["product"],
+          // (Read as rendered HTML: Firecrawl's own `images` list splits CDN URLs
+          // on commas, so photos come from our srcset-aware parser instead.)
+          formats: offeringPages.includes(link) ? ["product", "rawHtml"] : ["product"],
           maxAge: DAY_MS,
           timeout: 45_000,
         }),
@@ -171,7 +173,7 @@ export async function findSiteProducts(
     const link = targets[i];
     const images = unique(
       (p?.variants ?? []).flatMap((v) => (v.images ?? []).map((img) => absoluteUrl(img.url, link))),
-    );
+    ).filter((src) => !isImageFragment(src, link));
     if (p?.title && images.length > 0) {
       return [
         {
@@ -201,14 +203,17 @@ export async function findSiteProducts(
         productType: typeOf.get(link) ?? p?.category,
         description: (p?.description ?? meta.description ?? meta.ogDescription)?.slice(0, 600),
         images: rankPagePhotos(
-          unique([...images, ...(doc.images ?? []).map((src) => absoluteUrl(src, link))]),
+          unique([...images, ...(doc.rawHtml ? imagesFromHtml(doc.rawHtml, link) : [])]),
           { title, ogImage: absoluteUrl(meta.ogImage, link), retail: new Set() },
         ),
       },
     ];
   });
 
-  return [...products, ...itemsFromExtraction(featured, url.href, products)];
+  return withoutSiteChrome(
+    [...products, ...itemsFromExtraction(featured, url.href, products)],
+    notItemPhotos(page),
+  );
 }
 
 /** Navbar links that look like top-level product categories. */
@@ -296,7 +301,7 @@ export async function findSiteServices(
   const reads = await Promise.allSettled(
     targets.map((link) =>
       withRateLimitRetry(() =>
-        fc.scrape(link, { formats: ["markdown", "images"], maxAge: DAY_MS, timeout: 45_000 }),
+        fc.scrape(link, { formats: ["markdown", "rawHtml"], maxAge: DAY_MS, timeout: 45_000 }),
       ),
     ),
   );
@@ -312,7 +317,7 @@ export async function findSiteServices(
     const title = hint?.name ?? cleanTitle(meta.ogTitle ?? meta.title);
     if (!title) return [];
     const images = rankPagePhotos(
-      unique((doc.images ?? []).map((src) => absoluteUrl(src, link))),
+      doc.rawHtml ? imagesFromHtml(doc.rawHtml, link) : [],
       {
         title,
         ogImage: absoluteUrl(meta.ogImage, link),
@@ -350,7 +355,7 @@ export async function findSiteServices(
     known.add(title.toLowerCase());
     found.push({ id: link.url, title, url: link.url, images: [] });
   }
-  return found;
+  return withoutSiteChrome(found, notItemPhotos(page));
 }
 
 /**
@@ -362,6 +367,8 @@ export async function photosForPicks(
   fc: Firecrawl,
   picks: { url: string; title: string }[],
   productImages: string[] = [],
+  /** File names that can't be a pick's photo: share image, logo, other items' photos. */
+  notPhotos: Set<string> = new Set(),
 ): Promise<Map<string, string[]>> {
   const retail = new Set(productImages.map(fileName));
   // Plain HTML first: it doesn't count against Firecrawl's per-minute limit,
@@ -375,22 +382,35 @@ export async function photosForPicks(
         if (images.length) return { images, ogImage: images[0] };
       } catch {}
       const doc = await withRateLimitRetry(() =>
-        fc.scrape(url, { formats: ["images"], maxAge: DAY_MS, timeout: 45_000 }),
+        fc.scrape(url, { formats: ["rawHtml"], maxAge: DAY_MS, timeout: 45_000 }),
       );
-      return { images: doc.images ?? [], ogImage: doc.metadata?.ogImage };
+      return {
+        images: doc.rawHtml ? imagesFromHtml(doc.rawHtml, url) : [],
+        ogImage: doc.metadata?.ogImage,
+      };
     }),
   );
   logFailedReads(reads, picks.map((p) => p.url));
-  const photos = new Map<string, string[]>();
+  const found = new Map<string, string[]>();
   reads.forEach((read, i) => {
     if (read.status !== "fulfilled") return;
     const { url, title } = picks[i];
     const images = rankPagePhotos(
       unique(read.value.images.map((src) => absoluteUrl(src, url))),
       { title, ogImage: absoluteUrl(read.value.ogImage, url), retail },
-    );
-    if (images.length) photos.set(url, images);
+    ).filter((src) => !notPhotos.has(fileName(src)));
+    found.set(url, images);
   });
+  // A picture that turns up for two or more picks is the site's, not theirs.
+  const seenIn = new Map<string, number>();
+  for (const images of found.values()) {
+    for (const name of new Set(images.map(fileName))) seenIn.set(name, (seenIn.get(name) ?? 0) + 1);
+  }
+  const photos = new Map<string, string[]>();
+  for (const [url, images] of found) {
+    const own = images.filter((src) => (seenIn.get(fileName(src)) ?? 0) < 2);
+    if (own.length) photos.set(url, own);
+  }
   return photos;
 }
 
@@ -426,6 +446,9 @@ function rankPagePhotos(
       (src === ogImage ? 2 : 0) +
       (src === hinted ? 1 : 0) -
       (/product/i.test(src) ? 2 : 0) -
+      // Sitewide decoration that names itself, e.g. adidas's
+      // "bwp_adidas_content_slot_navigation" Buy-with-Prime banner.
+      (DECORATION.test(fileName(src)) ? 5 : 0) -
       index * 0.01
     );
   };
@@ -510,11 +533,19 @@ function logFailedReads(reads: PromiseSettledResult<unknown>[], targets: string[
 }
 
 /** Nav labels carry badges: "Brazilian Waxing popular" → "Brazilian Waxing". */
+/** Sites sometimes letter-space a name in markup: "P l o y M C P" → "PloyMCP". */
+function unspace(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  return parts.length >= 3 && parts.every((p) => p.length === 1) ? parts.join("") : name;
+}
+
 function cleanLinkText(text: string): string {
-  return text
-    .replace(/\s+(popular|new|sale|hot|best ?seller)$/i, "")
-    .replace(/&amp;/g, "&")
-    .trim();
+  return unspace(
+    text
+      .replace(/\s+(popular|new|sale|hot|best ?seller)$/i, "")
+      .replace(/&amp;/g, "&")
+      .trim(),
+  );
 }
 
 /** Extracted items whose pages weren't read still count, with the photo the page showed. */
@@ -529,7 +560,7 @@ function itemsFromExtraction(items: ExtractedItem[], base: string, existing: Pro
     return [
       {
         id: link,
-        title: item.name,
+        title: unspace(item.name),
         url: absoluteUrl(item.url, base) ?? base,
         price: item.price,
         productType: item.category,
@@ -546,18 +577,68 @@ function sameSiteUrls(items: ExtractedItem[], base: string, host: string): strin
     .filter((u): u is string => u !== undefined && isSameSite(u, host));
 }
 
+const DECORATION = /banner|promo|navigation|content[_-]?slot|(?:^|[_-])nav[_-]|^bwp[_-]|badge/;
+
+/**
+ * Site chrome: an image on two or more different item pages (a nav promo
+ * like adidas's "Buy with Prime" banner, a site-wide share image, a stock
+ * studio photo) isn't any one item's photo, so it's dropped. An item left
+ * with no photo of its own shows none rather than a repeated picture: not
+ * everything a business sells (a plan, an integration) has a photo.
+ */
+function withoutSiteChrome(items: Product[], notPhotos: Set<string>): Product[] {
+  const pagesWith = new Map<string, number>();
+  for (const item of items) {
+    for (const name of new Set(item.images.map(fileName))) {
+      pagesWith.set(name, (pagesWith.get(name) ?? 0) + 1);
+    }
+  }
+  const isItemPhoto = (src: string) =>
+    (pagesWith.get(fileName(src)) ?? 0) < 2 && !notPhotos.has(fileName(src));
+  return items.map((item) => ({ ...item, images: item.images.filter(isItemPhoto) }));
+}
+
+/**
+ * Pictures that are never one item's photo: the homepage's share image (sites
+ * fall back to it as every page's og:image) and the logo. Compared by file
+ * name, since CDNs serve the same file under different sizes.
+ */
+/** What a hero pick's late-fetched photos must not be: see notItemPhotos, plus other items' photos. */
+export function pickPhotoExclusions(
+  page: PageResearch | null,
+  otherItems: { images: string[] }[],
+): Set<string> {
+  const excluded = page ? notItemPhotos(page) : new Set<string>();
+  for (const item of otherItems) for (const src of item.images) excluded.add(fileName(src));
+  return excluded;
+}
+
+function notItemPhotos(page: PageResearch): Set<string> {
+  return new Set(
+    [page.shareImage, ...page.logoCandidates]
+      .filter((src): src is string => Boolean(src) && !src!.startsWith("data:"))
+      .map(fileName),
+  );
+}
+
 /** Drops logos, icons, sprites and tracking pixels; keeps real photography. */
 function isPhoto(src: string): boolean {
   const path = src.split("?")[0].toLowerCase();
   if (src.startsWith("data:") || /\.(svg|ico|gif)$/.test(path)) return false;
   // Unrendered template placeholders from raw HTML, e.g. {{variantImageURL}}.
   if (/%7b%7b|\{\{|\$\{|%24%7b/i.test(src)) return false;
-  return !/logo|icon|sprite|badge|avatar|pixel|tracking|placeholder|spinner|arrow|payment|flag|emoji/.test(path);
+  // Third-party widgets (survey popups, ad and analytics pixels) aren't product photos.
+  if (/qualtrics|doubleclick|googletagmanager|google-analytics|facebook\.com\/tr/.test(src)) return false;
+  return !/logo|icon|sprite|badge|avatar|pixel|tracking|placeholder|spinner|arrow|payment|flag|emoji|close-?(?:btn|button)|btn-close/.test(path);
 }
 
-/** "Facials | Glow Spa" → "Facials". */
+/** "Facials | Glow Spa" → "Facials"; "ACG. Nike.com" → "ACG". */
 function cleanTitle(title: string | undefined): string | undefined {
-  return title?.split(/\s[|–—-]\s/)[0]?.trim() || undefined;
+  const name = title
+    ?.split(/\s[|–—-]\s/)[0]
+    ?.replace(/[.·]\s*[\w-]+\.(?:com|co|net|org|io|shop|store|us|uk|ca|au)\s*$/i, "")
+    .trim();
+  return name ? unspace(name) : undefined;
 }
 
 function firstParagraph(markdown: string | undefined): string | undefined {

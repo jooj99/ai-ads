@@ -79,7 +79,8 @@ export async function classifyLinks({
     instructions: `You sort a website's links so an ad tool reads the pages that describe what the business sells.
 This business sells ${offering}. Judge each link by its label, its path and where it sits (nav, footer or page body).
 A software company's products are often named modules ("Records", "Dispatch", "Intelligence"); those are offerings.
-Features of the site itself (compliance, security, integrations, migration) are not offerings unless the link is to a page selling them.`,
+Features of the site itself (compliance, security, integrations, migration) are not offerings unless the link is to a page selling them.
+Sales and promotions (Black Friday, Cyber Monday, holiday deals, "Sale", clearance, "New arrivals", "Best sellers", gift guides) are not offerings or indexes: they cut across what the business sells. Prefer the permanent pages for each kind of product or service.`,
     prompt: [`Website: ${domain}`, navigation && `Navbar labels in order: ${navigation}`, "", "Links:", list]
       .filter((line): line is string => typeof line === "string")
       .join("\n"),

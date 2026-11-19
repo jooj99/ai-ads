@@ -20,6 +20,8 @@ export const REAL_LOGO_SCORE = 5;
 
 export type HtmlSignals = {
   title?: string;
+  /** The page's og:image. */
+  shareImage?: string;
   description?: string;
   siteName?: string;
   logos: LogoCandidate[];
@@ -115,7 +117,8 @@ export function extractHtmlSignals(html: string, base: string, externalCss = "")
   // 2. <img> tags that call themselves a logo.
   for (const m of html.matchAll(/<img\b[^>]*>/gi)) {
     const tag = m[0];
-    const src = attr(tag, "src") ?? attr(tag, "data-src") ?? attr(tag, "srcset")?.split(/[\s,]/)[0];
+    const src =
+      attr(tag, "src") ?? attr(tag, "data-src") ?? parseSrcset(decode(attr(tag, "srcset")))[0];
     if (!src) continue;
     const context = html.slice(Math.max(0, m.index - 400), m.index);
     const inSrc = LOGO_WORDS.test(src);
@@ -183,6 +186,7 @@ export function extractHtmlSignals(html: string, base: string, externalCss = "")
   return {
     title: decode(html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim()),
     description: decode(metaContent(html, "og:description") ?? metaContent(html, "description")),
+    shareImage: absoluteUrl(decode(metaContent(html, "og:image")), base),
     siteName,
     logos: rankLogos(logos),
     colors: colorsFromCss(allCss, html),
@@ -447,19 +451,60 @@ function stripTags(html: string): string {
     .trim();
 }
 
-/** A page's photos from markup: share image, then <img> (largest srcset entry), in page order. */
+/**
+ * A page's photos from markup: the share image, then every <img> and
+ * <picture><source> (largest srcset entry), in page order. Fragments of
+ * broken srcset splits are dropped.
+ */
 export function imagesFromHtml(html: string, base: string): string[] {
   const og = absoluteUrl(decode(metaContent(html, "og:image")), base);
-  const imgs = [...html.matchAll(/<img\b[^>]*>/gi)].map((m) => {
+  const tags = [...html.matchAll(/<(?:img|source)\b[^>]*>/gi)].map((m) => {
     const tag = m[0];
-    const srcset = attr(tag, "srcset") ?? attr(tag, "data-srcset");
-    const largest = srcset
-      ?.split(",")
-      .map((entry) => entry.trim().split(/\s+/))
-      .sort((a, b) => parseInt(b[1] ?? "0") - parseInt(a[1] ?? "0"))[0]?.[0];
-    return absoluteUrl(decode(largest ?? attr(tag, "src") ?? attr(tag, "data-src")), base);
+    const best = parseSrcset(decode(attr(tag, "srcset") ?? attr(tag, "data-srcset")))[0];
+    return absoluteUrl(best ?? decode(attr(tag, "src") ?? attr(tag, "data-src")), base);
   });
-  return unique([og, ...imgs]);
+  return unique([og, ...tags]).filter((src) => !isImageFragment(src, base));
+}
+
+/**
+ * srcset → candidate URLs, largest first. Candidates are separated by a comma
+ * plus whitespace ("a.jpg 1x, b.jpg 2x") or a comma right after a descriptor
+ * ("a.jpg 600w,b.jpg 1200w"). Never split on other commas: image CDNs put
+ * them inside URLs (static.nike.com/a/images/c_limit,w_318,f_auto/…).
+ */
+export function parseSrcset(srcset: string | undefined): string[] {
+  if (!srcset) return [];
+  return srcset
+    .split(/,\s+/)
+    .flatMap((piece) => piece.split(/(?<=\s\d+(?:\.\d+)?[wx]),/))
+    .map((entry) => {
+      const [url, descriptor = ""] = entry.trim().split(/\s+/);
+      const n = parseFloat(descriptor) || 0;
+      return { url, size: descriptor.endsWith("x") ? n * 1_000 : n };
+    })
+    .filter((c) => c.url)
+    .sort((a, b) => b.size - a.size)
+    .map((c) => c.url);
+}
+
+/**
+ * True for the debris of a srcset split on commas inside a CDN URL: a piece
+ * like "fl_layer_apply/…/SHOE.png" resolved against the page, giving
+ * www.nike.com/w/fl_layer_apply/… — a page URL, not an image. Firecrawl's
+ * own `images` list contains these, so every image list is checked.
+ */
+export function isImageFragment(src: string, pageUrl: string): boolean {
+  try {
+    const url = new URL(src);
+    if (url.hostname !== new URL(pageUrl).hostname) return false;
+    return url.pathname
+      .split("/")
+      .filter(Boolean)
+      .slice(0, 3)
+      .some((segment) => segment.includes(",") || /^[a-z]{1,3}_[\w.:-]+$/i.test(segment));
+  } catch {
+    return true;
+  }
 }
 
 // --- navbar and footer ------------------------------------------------------

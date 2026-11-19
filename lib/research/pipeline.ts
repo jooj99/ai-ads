@@ -1,4 +1,10 @@
-import { findSiteProducts, findSiteServices, photosForPicks, pickSiteLinks } from "./catalog";
+import {
+  findSiteProducts,
+  findSiteServices,
+  photosForPicks,
+  pickPhotoExclusions,
+  pickSiteLinks,
+} from "./catalog";
 import { streamInsights, type Insights } from "./insights";
 import { classifyOffering } from "./offering";
 import { firecrawlClient, researchPage, type PageResearch } from "./page";
@@ -304,7 +310,16 @@ export async function runResearch(input: string, emit: ResearchEmitter): Promise
     if (fc && unphotographed.length > 0) {
       setStep("insights", "running", `Getting photos for ${unphotographed.length} picks`);
       const retail = (await shopifyCatalog)?.products.flatMap((p) => p.images) ?? [];
-      const photos = await photosForPicks(fc, unphotographed, retail);
+      const waiting = new Set(unphotographed.map((p) => p.id));
+      const photos = await photosForPicks(
+        fc,
+        unphotographed,
+        retail,
+        pickPhotoExclusions(
+          page,
+          (kit.catalog ?? kit.products).filter((item) => !waiting.has(item.id)),
+        ),
+      );
       kit.products = kit.products.map((p) =>
         photos.has(p.url) ? { ...p, images: photos.get(p.url)! } : p,
       );

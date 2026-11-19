@@ -28,6 +28,8 @@ export type PageResearch = {
   logo?: string;
   /** Where the chosen logo came from, e.g. "brand extractor", "CSS mask" or "/assets/logo.png". */
   logoVia?: string;
+  /** The homepage's og:image: the site-wide share picture, never one item's photo. */
+  shareImage?: string;
   /** False when the best we have is a favicon or share image. */
   hasRealLogo: boolean;
   logoCandidates: string[];
@@ -57,6 +59,7 @@ export function firecrawlClient(): Firecrawl | null {
 
 type FirecrawlRead = {
   base: string;
+  shareImage?: string;
   title?: string;
   description?: string;
   siteName?: string;
@@ -142,6 +145,7 @@ export async function researchPage(fc: Firecrawl | null, url: URL): Promise<Page
 
   return {
     source: read ? "firecrawl" : "html",
+    shareImage: read?.shareImage ?? signals?.shareImage,
     title: read?.title ?? signals?.title,
     description: read?.description ?? signals?.description,
     siteName: read?.siteName ?? signals?.siteName,
@@ -208,9 +212,11 @@ async function scrapeWithFirecrawl(fc: Firecrawl, url: URL): Promise<FirecrawlRe
   if (favicon) logos.push({ url: favicon, via: "favicon", score: 1 });
   const ogImage = absoluteUrl(branding?.images?.ogImage ?? str(meta.ogImage), base);
   if (ogImage) logos.push({ url: ogImage, via: "share image", score: 0 });
+  const shareImage = ogImage;
 
   return {
     base,
+    shareImage,
     title: str(meta.title),
     description: str(meta.description) ?? str(meta.ogDescription),
     siteName: branding?.brandName ?? str(meta.ogSiteName),

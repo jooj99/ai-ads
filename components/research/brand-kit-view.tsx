@@ -3,7 +3,7 @@
 /* eslint-disable @next/next/no-img-element -- logos and product photos come from
    each store's own CDN (any host), so they're shown as plain images. */
 
-import { CheckIcon, ImageOffIcon, QuoteIcon, StarIcon, XIcon } from "lucide-react";
+import { CheckIcon, QuoteIcon, StarIcon, XIcon } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -476,8 +476,13 @@ function ProductCard({ item, hero }: { item: CatalogItem; hero?: SelectedProduct
             onError={() => setBroken(true)}
           />
         ) : (
-          <div className="flex aspect-[4/5] items-center justify-center text-muted-foreground">
-            <ImageOffIcon className="size-6" />
+          // Not everything a business sells has a photo (a plan, an integration);
+          // show the name as a typographic tile rather than a broken-image icon.
+          <div className="flex aspect-[4/5] flex-col justify-end gap-2 bg-muted p-5">
+            <span className="line-clamp-4 font-display text-3xl leading-none break-words text-foreground/85 uppercase">
+              {item.title}
+            </span>
+            <span className="text-xs text-muted-foreground">No photo on the site</span>
           </div>
         )}
         {hero && (
