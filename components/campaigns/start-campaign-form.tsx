@@ -27,7 +27,7 @@ export function StartCampaignForm() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-lg">Start with a store URL</CardTitle>
+        <CardTitle className="text-lg">Paste your website URL</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         <form ref={formRef} action={formAction} className="flex flex-col gap-2 sm:flex-row">

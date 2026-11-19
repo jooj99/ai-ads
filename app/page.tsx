@@ -8,11 +8,11 @@ export default function HomePage() {
     <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-8 p-6 md:p-10">
       <div className="flex flex-col gap-3">
         <h1 className="font-display text-5xl leading-none uppercase md:text-6xl">
-          From store to ads
+          Start Ployin&apos;
         </h1>
         <p className="max-w-xl text-muted-foreground">
-          Paste your store&apos;s URL to start a campaign. The agent reads your brand and catalog,
-          builds the brand kit, and picks the products your ads are made from.
+          Paste your store&apos;s URL to start a campaign. Ploy learns your branding, compiles your
+          products, and creates ads for you.
         </p>
       </div>
 

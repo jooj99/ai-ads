@@ -1,9 +1,12 @@
+import { ArrowLeftIcon } from "lucide-react";
 import type { Metadata } from "next";
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
 import { Suspense } from "react";
 
 import { CampaignResearch } from "@/components/campaigns/campaign-research";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getCampaignResearch } from "@/lib/campaigns";
 
@@ -11,7 +14,14 @@ export const metadata: Metadata = { title: "Campaign" };
 
 export default function CampaignPage({ params }: PageProps<"/campaigns/[id]">) {
   return (
-    <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col p-6 md:p-10">
+    <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-4 p-6 md:p-10">
+      {/* Outside Suspense, so it's part of the static shell and shows instantly. */}
+      <Button asChild variant="ghost" size="sm" className="-ml-2.5 w-fit text-muted-foreground">
+        <Link href="/campaigns">
+          <ArrowLeftIcon />
+          All campaigns
+        </Link>
+      </Button>
       {/* The campaign is read per request, so it streams in behind a skeleton. */}
       <Suspense fallback={<CampaignSkeleton />}>
         <Campaign params={params} />

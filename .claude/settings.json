@@ -2,7 +2,14 @@
   "permissions": {
     "allow": [
       "Bash(ffprobe *)",
-      "mcp__terminal__read_terminal"
+      "mcp__terminal__read_terminal",
+      "Bash(npm run lint)",
+      "Bash(npx tsc --noEmit)",
+      "Bash(vercel env ls)",
+      "Bash(vercel env ls *)",
+      "Bash(vercel whoami)",
+      "mcp__Claude_Browser__preview_logs",
+      "mcp__Claude_Browser__read_console_messages"
     ]
   }
 }
