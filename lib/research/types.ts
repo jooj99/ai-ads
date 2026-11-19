@@ -42,6 +42,9 @@ export type SelectedProduct = Product & {
 /** One of up to 10 groups the catalog is organized into for ads. */
 export type ProductType = { name: string; summary?: string };
 
+/** Any catalog item, tagged with its type; heroes are also in `products`. */
+export type CatalogItem = Product & { typeName?: string; isHero?: boolean };
+
 export type BrandColor = { hex: string; role: string };
 export type BrandFont = { family: string; role: string };
 
@@ -72,6 +75,8 @@ export type BrandKit = {
   productTypes: ProductType[];
   /** Hero picks, each tagged with its `typeName`. */
   products: SelectedProduct[];
+  /** The whole catalog (heroes included), each tagged with a type. Arrives at the end of research. */
+  catalog?: CatalogItem[];
   /** "ai" when the model chose the products; "default" when it couldn't and we fell back. */
   productsPickedBy?: "ai" | "default";
 };

@@ -22,6 +22,9 @@ import {
   ChainOfThoughtStep,
 } from "@/components/ai-elements/chain-of-thought";
 import { Shimmer } from "@/components/ai-elements/shimmer";
+import { updateKitStyleAction } from "@/app/campaigns/actions";
+import { CampaignTitle } from "@/components/campaigns/campaign-title";
+import { DeleteCampaignButton } from "@/components/campaigns/delete-campaign-button";
 import { BrandKitView } from "@/components/research/brand-kit-view";
 import { StageStepper } from "@/components/research/stage-stepper";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -94,7 +97,12 @@ export function CampaignResearch({
 
   const running = status === "submitted" || status === "streaming";
   const steps = live?.steps ?? savedSteps;
-  const kit = live ? live.kit : (savedKit ?? undefined);
+  const researchedKit = live ? live.kit : (savedKit ?? undefined);
+  // The user's removals of colors/fonts, applied on top of the researched kit
+  // until the next research run replaces it.
+  const [edits, setEdits] = useState<{ colors?: BrandKit["colors"]; fonts?: BrandKit["fonts"] }>({});
+  const [editError, setEditError] = useState<string>();
+  const kit = researchedKit && !running ? { ...researchedKit, ...edits } : researchedKit;
   const notice = live ? live.notice : (savedNotice ?? undefined);
   const fatal = notice?.level === "error" && !kit?.name;
   const insights = steps.find((s) => s.id === "insights");
@@ -102,8 +110,21 @@ export function CampaignResearch({
   const researchDone =
     !running && !error && (insights?.status === "done" || insights?.status === "warning");
 
+  function saveStyle(change: { colors?: BrandKit["colors"]; fonts?: BrandKit["fonts"] }) {
+    const previous = edits;
+    setEdits((current) => ({ ...current, ...change }));
+    setEditError(undefined);
+    void updateKitStyleAction(campaign.id, change).then((result) => {
+      if (!result.ok) {
+        setEdits(previous);
+        setEditError(result.error);
+      }
+    });
+  }
+
   function research() {
     if (running) return;
+    setEdits({});
     setStepsOpen(true);
     setMessages([]);
     void sendMessage({ text: campaign.sourceUrl });
@@ -124,9 +145,11 @@ export function CampaignResearch({
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div className="flex min-w-0 flex-col gap-2">
-          <h1 className="truncate font-display text-5xl leading-none uppercase md:text-6xl">
-            {kit?.name ?? campaign.name}
-          </h1>
+          <CampaignTitle
+            campaignId={campaign.id}
+            // Research renames a campaign that still has its default name.
+            name={campaign.name === campaign.domain && kit?.name ? kit.name : campaign.name}
+          />
           <a
             href={campaign.sourceUrl}
             target="_blank"
@@ -137,17 +160,20 @@ export function CampaignResearch({
             <ExternalLinkIcon className="size-3.5" />
           </a>
         </div>
-        {running ? (
-          <Button variant="outline" onClick={() => stop()}>
-            <SquareIcon className="size-3.5 fill-current" />
-            Stop
-          </Button>
-        ) : (
-          <Button variant="outline" onClick={research}>
-            <RotateCwIcon />
-            {kit ? "Research again" : "Start research"}
-          </Button>
-        )}
+        <div className="flex items-center gap-1">
+          <DeleteCampaignButton campaignId={campaign.id} name={campaign.name} goToList />
+          {running ? (
+            <Button variant="outline" onClick={() => stop()}>
+              <SquareIcon className="size-3.5 fill-current" />
+              Stop
+            </Button>
+          ) : (
+            <Button variant="outline" onClick={research}>
+              <RotateCwIcon />
+              {kit ? "Research again" : "Start research"}
+            </Button>
+          )}
+        </div>
       </div>
 
       <StageStepper researchDone={researchDone} />
@@ -243,7 +269,23 @@ export function CampaignResearch({
           </Card>
         )}
 
-        {kit && !fatal && <BrandKitView kit={kit} pending={running} />}
+        {editError && (
+          <Alert variant="destructive">
+            <XCircleIcon />
+            <AlertTitle>{editError}</AlertTitle>
+          </Alert>
+        )}
+
+        {kit && !fatal && (
+          <BrandKitView
+            kit={kit}
+            pending={running}
+            onRemoveColor={(hex) => saveStyle({ colors: kit.colors.filter((c) => c.hex !== hex) })}
+            onRemoveFont={(family) =>
+              saveStyle({ fonts: kit.fonts.filter((f) => f.family !== family) })
+            }
+          />
+        )}
       </section>
     </div>
   );

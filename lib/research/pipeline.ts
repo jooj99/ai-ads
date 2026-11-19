@@ -8,6 +8,7 @@ import {
   STEP_LABELS,
   STEP_ORDER,
   type BrandKit,
+  type CatalogItem,
   type Offering,
   type Product,
   type ProductType,
@@ -273,7 +274,9 @@ export async function runResearch(input: string, emit: ResearchEmitter): Promise
         lastSent = Date.now();
       }
     }
-    applyInsights(await result.output);
+    const final = await result.output;
+    applyInsights(final);
+    kit.catalog = typedCatalog(products, kit, final.productTypes);
     sendKit();
 
     // Picks known only from a nav link have no photos yet; read their pages.
@@ -286,6 +289,9 @@ export async function runResearch(input: string, emit: ResearchEmitter): Promise
       const photos = await photosForPicks(fc, unphotographed, retail);
       kit.products = kit.products.map((p) =>
         photos.has(p.url) ? { ...p, images: photos.get(p.url)! } : p,
+      );
+      kit.catalog = kit.catalog?.map((p) =>
+        photos.has(p.url) ? { ...p, images: photos.get(p.url)!.slice(0, 4) } : p,
       );
       sendKit();
     }
@@ -306,6 +312,9 @@ export async function runResearch(input: string, emit: ResearchEmitter): Promise
       kit.productTypes = fallback.types;
       kit.products = fallback.picks;
       kit.productsPickedBy = "default";
+    }
+    if (products.length > 0) {
+      kit.catalog = typedCatalog(products, kit, []);
       sendKit();
     }
     emit.notice({
@@ -322,6 +331,48 @@ export async function runResearch(input: string, emit: ResearchEmitter): Promise
  * Used only when the model is unavailable: group by the catalog's own type
  * field (largest first, at most 10) and pick the item with the most photos.
  */
+/**
+ * Tags every catalog item with one of the model's types, so the UI can show
+ * the whole catalog and filter it: heroes keep their pick's type, then the
+ * model's member ids (small catalogs), then the catalog's own listed type
+ * mapped through `catalogTypes`; anything left is "Other". Kept slim for the
+ * stream: four photos and a short description per item.
+ */
+function typedCatalog(
+  products: Product[],
+  kit: BrandKit,
+  modelTypes: Insights["productTypes"],
+): CatalogItem[] {
+  const heroType = new Map(kit.products.map((p) => [p.id, p.typeName]));
+  const known = new Set(kit.productTypes.map((t) => t.name));
+  const byMember = new Map<string, string>();
+  const byListedType = new Map<string, string>();
+  for (const type of modelTypes) {
+    if (!known.has(type.name)) continue;
+    for (const id of type.memberIds) if (!byMember.has(id)) byMember.set(id, type.name);
+    for (const listed of type.catalogTypes) {
+      const key = listed.trim().toLowerCase();
+      if (!byListedType.has(key)) byListedType.set(key, type.name);
+    }
+  }
+  return products.map((p) => ({
+    id: p.id,
+    title: p.title,
+    url: p.url,
+    price: p.price,
+    productType: p.productType,
+    description: p.description?.slice(0, 200),
+    images: p.images.slice(0, 4),
+    isHero: heroType.has(p.id),
+    typeName:
+      heroType.get(p.id) ??
+      byMember.get(p.id) ??
+      byListedType.get(p.productType?.trim().toLowerCase() ?? "") ??
+      // Fallback picks group by the listed type itself.
+      (kit.productsPickedBy === "default" ? p.productType?.trim() || "Other" : "Other"),
+  }));
+}
+
 function defaultPicks(products: Product[]): { types: ProductType[]; picks: SelectedProduct[] } {
   const groups = new Map<string, Product[]>();
   for (const p of products) {

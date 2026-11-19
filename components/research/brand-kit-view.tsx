@@ -3,13 +3,14 @@
 /* eslint-disable @next/next/no-img-element -- logos and product photos come from
    each store's own CDN (any host), so they're shown as plain images. */
 
-import { CheckIcon, ImageOffIcon, QuoteIcon } from "lucide-react";
+import { CheckIcon, ImageOffIcon, QuoteIcon, StarIcon, XIcon } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { BrandFont, BrandKit, SelectedProduct } from "@/lib/research/types";
+import { Button } from "@/components/ui/button";
+import type { BrandFont, BrandKit, CatalogItem, SelectedProduct } from "@/lib/research/types";
 import { cn } from "@/lib/utils";
 
 type Source = "site" | "ai";
@@ -71,7 +72,35 @@ function thumbnail(src: string, width: number) {
   return src;
 }
 
-export function BrandKitView({ kit, pending }: { kit: BrandKit; pending: boolean }) {
+/** Small ✕ shown on hover (always on touch screens) for removing an item. */
+function RemoveButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className="ml-auto flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-opacity hover:bg-muted hover:text-foreground focus-visible:opacity-100 md:opacity-0 md:group-hover:opacity-100"
+    >
+      <XIcon className="size-3.5" />
+    </button>
+  );
+}
+
+export function BrandKitView({
+  kit,
+  pending,
+  onRemoveColor,
+  onRemoveFont,
+}: {
+  kit: BrandKit;
+  pending: boolean;
+  /** When set (and research isn't running), colors and fonts get a remove button. */
+  onRemoveColor?: (hex: string) => void;
+  onRemoveFont?: (family: string) => void;
+}) {
+  const removeColor = pending ? undefined : onRemoveColor;
+  const removeFont = pending ? undefined : onRemoveFont;
   return (
     <div className="flex flex-col gap-4">
       <IdentityRow kit={kit} pending={pending} />
@@ -81,7 +110,7 @@ export function BrandKitView({ kit, pending }: { kit: BrandKit; pending: boolean
           {kit.colors.length ? (
             <ul className="grid grid-cols-2 gap-3">
               {kit.colors.map((color) => (
-                <li key={color.hex} className="flex items-center gap-2">
+                <li key={color.hex} className="group flex items-center gap-2">
                   <span
                     className="size-8 shrink-0 rounded-full ring-1 ring-foreground/10"
                     style={{ backgroundColor: color.hex }}
@@ -90,6 +119,9 @@ export function BrandKitView({ kit, pending }: { kit: BrandKit; pending: boolean
                     <span className="block font-mono text-xs">{color.hex}</span>
                     <span className="block truncate text-xs text-muted-foreground">{color.role}</span>
                   </span>
+                  {removeColor && (
+                    <RemoveButton label={`Remove ${color.hex}`} onClick={() => removeColor(color.hex)} />
+                  )}
                 </li>
               ))}
             </ul>
@@ -108,7 +140,11 @@ export function BrandKitView({ kit, pending }: { kit: BrandKit; pending: boolean
           {kit.fonts.length ? (
             <ul className="flex flex-col gap-3">
               {kit.fonts.map((font) => (
-                <FontRow key={font.family} font={font} />
+                <FontRow
+                  key={font.family}
+                  font={font}
+                  onRemove={removeFont ? () => removeFont(font.family) : undefined}
+                />
               ))}
             </ul>
           ) : pending ? (
@@ -243,7 +279,7 @@ function LogoTile({ kit, pending }: { kit: BrandKit; pending: boolean }) {
  * Previews each font in its own face when Google Fonts has it. Sites often
  * declare names like "Exo2" for Google's "Exo 2", so both spellings are tried.
  */
-function FontRow({ font }: { font: BrandFont }) {
+function FontRow({ font, onRemove }: { font: BrandFont; onRemove?: () => void }) {
   useEffect(() => {
     const names = new Set([font.family, font.family.replace(/([a-z])(\d+)$/i, "$1 $2")]);
     const links = [...names].map((name) => {
@@ -259,7 +295,7 @@ function FontRow({ font }: { font: BrandFont }) {
   const spaced = font.family.replace(/([a-z])(\d+)$/i, "$1 $2");
 
   return (
-    <li className="flex items-center gap-3">
+    <li className="group flex items-center gap-3">
       <span
         className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-muted text-xl"
         style={{ fontFamily: `"${font.family}", "${spaced}", var(--font-sans)` }}
@@ -271,25 +307,64 @@ function FontRow({ font }: { font: BrandFont }) {
         <span className="block truncate text-sm font-medium">{font.family}</span>
         <span className="block text-xs text-muted-foreground">{font.role}</span>
       </span>
+      {onRemove && <RemoveButton label={`Remove ${font.family}`} onClick={onRemove} />}
     </li>
   );
 }
 
+const PAGE_SIZE = 24;
+const ALL = "all";
+const HERO = "hero";
+
+/**
+ * The whole catalog with filters: All, Hero picks, and one per product type.
+ * Heroes sort first and carry their features; every other item shows its
+ * photo, type and price.
+ */
 function ProductPicks({ kit, pending }: { kit: BrandKit; pending: boolean }) {
   const services = kit.offering === "services";
   const noun = services ? "service" : "product";
-  const types = kit.productTypes;
-  const subtitle =
-    types.length > 0
-      ? `${types.length} ${noun} type${types.length === 1 ? "" : "s"}${
-          kit.catalogSize ? ` from ${kit.catalogSize} ${noun}s` : ""
-        } · ${kit.products.length} hero pick${kit.products.length === 1 ? "" : "s"} to feature in ads`
-      : `The ${noun}s to feature in ads, grouped by type`;
-  // Show picks in type order, so the grid reads type by type.
-  const order = new Map(types.map((t, i) => [t.name, i]));
-  const products = [...kit.products].sort(
-    (a, b) => (order.get(a.typeName ?? "") ?? 99) - (order.get(b.typeName ?? "") ?? 99),
-  );
+  const heroes = new Map(kit.products.map((p) => [p.id, p]));
+  // Older campaigns saved only their hero picks; show those until re-researched.
+  const catalog: CatalogItem[] = kit.catalog?.length
+    ? kit.catalog
+    : kit.products.map((p) => ({ ...p, isHero: true }));
+
+  const typeOrder = [
+    ...kit.productTypes.map((t) => t.name),
+    ...new Set(
+      catalog
+        .map((i) => i.typeName)
+        .filter((t): t is string => Boolean(t) && !kit.productTypes.some((k) => k.name === t)),
+    ),
+  ];
+  const rank = new Map(typeOrder.map((t, i) => [t, i]));
+  const countOf = (type: string) => catalog.filter((i) => i.typeName === type).length;
+
+  const [filter, setFilter] = useState<string>(ALL);
+  const [limit, setLimit] = useState(PAGE_SIZE);
+  const active = filter === ALL || filter === HERO || rank.has(filter) ? filter : ALL;
+
+  const visible = catalog
+    .filter((i) =>
+      active === ALL ? true : active === HERO ? heroes.has(i.id) : i.typeName === active,
+    )
+    .sort(
+      (a, b) =>
+        Number(heroes.has(b.id)) - Number(heroes.has(a.id)) ||
+        (rank.get(a.typeName ?? "") ?? 99) - (rank.get(b.typeName ?? "") ?? 99),
+    );
+
+  function choose(next: string) {
+    setFilter(next);
+    setLimit(PAGE_SIZE);
+  }
+
+  const chips = [
+    { id: ALL, label: "All", count: catalog.length },
+    { id: HERO, label: "Hero picks", count: heroes.size },
+    ...typeOrder.map((t) => ({ id: t, label: t, count: countOf(t) })),
+  ];
 
   return (
     <Card className="gap-4">
@@ -299,7 +374,13 @@ function ProductPicks({ kit, pending }: { kit: BrandKit; pending: boolean }) {
             Product selection
             {services && <Badge variant="secondary">Services</Badge>}
           </CardTitle>
-          <p className="text-sm text-muted-foreground">{subtitle}</p>
+          <p className="text-sm text-muted-foreground">
+            {catalog.length > 0
+              ? `${catalog.length} ${noun}${catalog.length === 1 ? "" : "s"} in ${kit.productTypes.length} type${
+                  kit.productTypes.length === 1 ? "" : "s"
+                } · ${heroes.size} hero pick${heroes.size === 1 ? "" : "s"} to feature in ads`
+              : `The ${noun}s to feature in ads, grouped by type`}
+          </p>
         </div>
         <Badge variant="outline" className="font-normal text-muted-foreground">
           {kit.productsPickedBy === "default"
@@ -308,24 +389,44 @@ function ProductPicks({ kit, pending }: { kit: BrandKit; pending: boolean }) {
         </Badge>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
-        {types.length > 0 && (
-          <ul className="flex flex-wrap gap-1.5" aria-label={`${noun} types`}>
-            {types.map((type, i) => (
-              <li key={type.name}>
-                <Badge variant="outline" className="gap-1.5 py-1" title={type.summary}>
-                  <span className="text-muted-foreground tabular-nums">{i + 1}</span>
-                  {type.name}
-                </Badge>
-              </li>
+        {catalog.length > 0 && (
+          <div className="flex flex-wrap gap-1.5" role="group" aria-label={`Filter ${noun}s`}>
+            {chips.map((chip) => (
+              <Button
+                key={chip.id}
+                type="button"
+                size="sm"
+                variant={active === chip.id ? "default" : "outline"}
+                aria-pressed={active === chip.id}
+                onClick={() => choose(chip.id)}
+                className="gap-1.5"
+              >
+                {chip.id === HERO && <StarIcon className="size-3.5" />}
+                {chip.label}
+                <span className="tabular-nums opacity-60">{chip.count}</span>
+              </Button>
             ))}
-          </ul>
+          </div>
         )}
-        {products.length ? (
-          <ul className="grid gap-x-4 gap-y-6 sm:grid-cols-2 lg:grid-cols-3">
-            {products.map((product) => (
-              <ProductCard key={product.id} product={product} />
-            ))}
-          </ul>
+
+        {visible.length ? (
+          <>
+            <ul className="grid gap-x-4 gap-y-6 sm:grid-cols-2 lg:grid-cols-3">
+              {visible.slice(0, limit).map((item) => (
+                <ProductCard key={item.id} item={item} hero={heroes.get(item.id)} />
+              ))}
+            </ul>
+            {visible.length > limit && (
+              <Button
+                type="button"
+                variant="outline"
+                className="self-center"
+                onClick={() => setLimit((n) => n + PAGE_SIZE)}
+              >
+                Show more ({visible.length - limit} left)
+              </Button>
+            )}
+          </>
         ) : pending ? (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {Array.from({ length: 3 }, (_, i) => (
@@ -346,24 +447,24 @@ function ProductPicks({ kit, pending }: { kit: BrandKit; pending: boolean }) {
   );
 }
 
-function ProductCard({ product }: { product: SelectedProduct }) {
+function ProductCard({ item, hero }: { item: CatalogItem; hero?: SelectedProduct }) {
   const [broken, setBroken] = useState(false);
   // Wide packshots (eyeglasses, shoes) get cropped by a portrait frame; show those whole.
   const [wide, setWide] = useState(false);
-  const image = product.images[0];
+  const image = (hero ?? item).images[0];
 
   return (
     <li className="flex flex-col gap-3">
       <a
-        href={product.url}
+        href={item.url}
         target="_blank"
         rel="noreferrer"
-        className="block overflow-hidden rounded-lg bg-muted ring-1 ring-foreground/10"
+        className="relative block overflow-hidden rounded-lg bg-muted ring-1 ring-foreground/10"
       >
         {image && !broken ? (
           <img
             src={thumbnail(image, 600)}
-            alt={product.title}
+            alt={item.title}
             loading="lazy"
             className={cn(
               "aspect-[4/5] w-full transition-transform duration-300 hover:scale-[1.03]",
@@ -379,21 +480,25 @@ function ProductCard({ product }: { product: SelectedProduct }) {
             <ImageOffIcon className="size-6" />
           </div>
         )}
+        {hero && (
+          <Badge className="absolute top-2 left-2 gap-1 shadow-sm">
+            <StarIcon className="size-3" />
+            Hero
+          </Badge>
+        )}
       </a>
-      {product.typeName && (
+      {item.typeName && (
         <span className="-mb-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          {product.typeName}
+          {item.typeName}
         </span>
       )}
       <div className="flex items-start justify-between gap-2">
-        <p className="font-medium leading-snug">{product.title}</p>
-        {product.price && (
-          <span className="shrink-0 text-sm text-muted-foreground">{product.price}</span>
-        )}
+        <p className="font-medium leading-snug">{item.title}</p>
+        {item.price && <span className="shrink-0 text-sm text-muted-foreground">{item.price}</span>}
       </div>
-      {product.features.length > 0 && (
+      {hero && hero.features.length > 0 && (
         <ul className="flex flex-col gap-1.5">
-          {product.features.map((feature) => (
+          {hero.features.map((feature) => (
             <li key={feature} className="flex gap-2 text-sm">
               <CheckIcon className="mt-0.5 size-4 shrink-0" />
               <span>{feature}</span>
@@ -401,7 +506,7 @@ function ProductCard({ product }: { product: SelectedProduct }) {
           ))}
         </ul>
       )}
-      {product.reason && <p className="text-xs text-muted-foreground">{product.reason}</p>}
+      {hero?.reason && <p className="text-xs text-muted-foreground">{hero.reason}</p>}
     </li>
   );
 }

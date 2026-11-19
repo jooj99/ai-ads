@@ -11,6 +11,9 @@ import { MAX_PRODUCT_TYPES, type Offering, type Product } from "./types";
  */
 export const RESEARCH_MODEL = process.env.RESEARCH_MODEL ?? "anthropic/claude-sonnet-5.5";
 
+/** Up to this size the model lists every item's type by id; above it, by listed type values. */
+export const SMALL_CATALOG = 60;
+
 export const insightsSchema = z.object({
   brandName: z
     .string()
@@ -47,6 +50,16 @@ export const insightsSchema = z.object({
             "Short name for a KIND of product or service, e.g. 'Prescription glasses', 'Sunglasses', 'Phone cases', 'Facials'.",
           ),
         summary: z.string().describe("One line on what this type covers."),
+        catalogTypes: z
+          .array(z.string())
+          .describe(
+            "The catalog's own listed type values (from the 'types across all' summary) that belong to this type, copied exactly. Empty if items have no listed type.",
+          ),
+        memberIds: z
+          .array(z.string())
+          .describe(
+            `Only when the catalog lists ${SMALL_CATALOG} items or fewer: the ids of ALL items of this type. Otherwise an empty array.`,
+          ),
         items: z
           .array(
             z.object({

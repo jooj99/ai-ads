@@ -6,6 +6,7 @@ import Link from "next/link";
 import { connection } from "next/server";
 import { Suspense } from "react";
 
+import { DeleteCampaignButton } from "@/components/campaigns/delete-campaign-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -85,7 +86,7 @@ async function CampaignList() {
   return (
     <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
       {campaigns.map((c) => (
-        <li key={c.id}>
+        <li key={c.id} className="group relative">
           <Link
             href={`/campaigns/${c.id}`}
             className="group flex h-full flex-col gap-4 rounded-xl bg-card p-4 ring-1 ring-foreground/10 transition-shadow hover:ring-foreground/25"
@@ -98,7 +99,7 @@ async function CampaignList() {
                   <span className="font-display text-xl uppercase">{c.name.slice(0, 1)}</span>
                 )}
               </span>
-              <div className="min-w-0">
+              <div className="min-w-0 pr-8">
                 <p className="truncate font-medium">{c.name}</p>
                 <p className="truncate text-sm text-muted-foreground">{c.domain}</p>
               </div>
@@ -114,6 +115,13 @@ async function CampaignList() {
               </span>
             </div>
           </Link>
+          {/* Outside the link so it never opens the campaign. */}
+          <DeleteCampaignButton
+            campaignId={c.id}
+            name={c.name}
+            compact
+            className="absolute top-3 right-3 bg-card md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
+          />
         </li>
       ))}
     </ul>
