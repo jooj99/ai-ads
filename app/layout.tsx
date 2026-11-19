@@ -1,9 +1,6 @@
 import type { Metadata } from "next";
 import { Anton, Geist, Geist_Mono } from "next/font/google";
 
-import { AppSidebar } from "@/components/app-sidebar";
-import { SiteHeader } from "@/components/site-header";
-import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import "./globals.css";
 
@@ -36,15 +33,8 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       className={`${geistSans.variable} ${geistMono.variable} ${anton.variable} h-full antialiased`}
     >
       <body className="min-h-full">
-        <TooltipProvider>
-          <SidebarProvider>
-            <AppSidebar />
-            <SidebarInset>
-              <SiteHeader />
-              {children}
-            </SidebarInset>
-          </SidebarProvider>
-        </TooltipProvider>
+        {/* The app shell (sidebar + header) lives in app/(app)/layout.tsx; /login has none. */}
+        <TooltipProvider>{children}</TooltipProvider>
       </body>
     </html>
   );

@@ -3,6 +3,7 @@ import { createUIMessageStreamResponse } from "ai";
 import { getRun } from "workflow/api";
 
 import { activeRunFor } from "../run";
+import { unauthorized } from "@/lib/supabase/auth";
 
 /**
  * Reconnects to an agent run's stream, replaying it from the start and then
@@ -11,6 +12,8 @@ import { activeRunFor } from "../run";
  * research it didn't start). `startIndex` skips UI chunks the client has.
  */
 export async function GET(req: Request, ctx: RouteContext<"/api/campaigns/[id]/chat/[runId]/stream">) {
+  const denied = await unauthorized();
+  if (denied) return denied;
   const { id, runId } = await ctx.params;
   const target = await activeRunFor(id, runId);
   if (!target) return new Response(null, { status: 204 });

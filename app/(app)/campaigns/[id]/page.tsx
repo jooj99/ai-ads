@@ -6,6 +6,7 @@ import { Suspense } from "react";
 import { CampaignWorkspace } from "@/components/campaigns/campaign-workspace";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getCampaignResearch, getChat, listHeadlines } from "@/lib/campaigns";
+import { requireUser } from "@/lib/supabase/auth";
 
 export const metadata: Metadata = { title: "Campaign" };
 
@@ -20,6 +21,7 @@ export default function CampaignPage({ params }: PageProps<"/campaigns/[id]">) {
 
 async function Campaign({ params }: { params: PageProps<"/campaigns/[id]">["params"] }) {
   await connection(); // always read fresh from the database, never at build time
+  await requireUser(); // the proxy checks too; data reads never rely on it alone
   const { id } = await params;
   let research: Awaited<ReturnType<typeof getCampaignResearch>>;
   let messages: Awaited<ReturnType<typeof getChat>>;

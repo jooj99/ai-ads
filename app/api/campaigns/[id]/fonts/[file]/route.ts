@@ -1,5 +1,6 @@
 import { FONT_BUCKET, FONT_TYPES } from "@/lib/research/font-store";
 import { supabase } from "@/lib/supabase/server";
+import { unauthorized } from "@/lib/supabase/auth";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FILE = /^[a-z0-9-]+\.(woff2|woff|ttf|otf)$/;
@@ -11,6 +12,8 @@ const FILE = /^[a-z0-9-]+\.(woff2|woff|ttf|otf)$/;
  * so responses are cached for good.
  */
 export async function GET(_req: Request, ctx: RouteContext<"/api/campaigns/[id]/fonts/[file]">) {
+  const denied = await unauthorized();
+  if (denied) return denied;
   const { id, file } = await ctx.params;
   const ext = file.match(FILE)?.[1];
   if (!UUID.test(id) || !ext) return new Response("Not found", { status: 404 });

@@ -3,6 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
+import { requireUser } from "@/lib/supabase/auth";
+
 import {
   addHeadline,
   deleteCampaign,
@@ -29,6 +31,7 @@ async function run(work: () => Promise<void>, failure: string): Promise<ActionRe
 }
 
 export async function renameCampaignAction(campaignId: string, name: string): Promise<ActionResult> {
+  await requireUser();
   const parsed = z.object({ campaignId: id, name: z.string().trim().min(1).max(80) }).safeParse({
     campaignId,
     name,
@@ -38,6 +41,7 @@ export async function renameCampaignAction(campaignId: string, name: string): Pr
 }
 
 export async function deleteCampaignAction(campaignId: string): Promise<ActionResult> {
+  await requireUser();
   if (!id.safeParse(campaignId).success) return { ok: false, error: "Unknown campaign." };
   return run(() => deleteCampaign(campaignId), "Couldn't delete the campaign.");
 }
@@ -69,6 +73,7 @@ export async function updateKitStyleAction(
   campaignId: string,
   style: { colors?: unknown; fonts?: unknown; audience?: unknown },
 ): Promise<ActionResult> {
+  await requireUser();
   const parsed = z
     .object({
       campaignId: id,
@@ -92,6 +97,7 @@ export async function saveHeadlineAction(
   campaignId: string,
   headline: { headline: string; cta: string; source: "agent" | "user"; proposalId: string | null },
 ): Promise<ActionResult> {
+  await requireUser();
   const parsed = z
     .object({
       campaignId: id,
@@ -114,6 +120,7 @@ export async function removeHeadlineAction(
   campaignId: string,
   headline: { headline: string; cta: string },
 ): Promise<ActionResult> {
+  await requireUser();
   const parsed = z.object({ campaignId: id, headline: copy }).safeParse({ campaignId, headline });
   if (!parsed.success) return { ok: false, error: "Unknown headline." };
   return run(
@@ -124,6 +131,7 @@ export async function removeHeadlineAction(
 
 /** Re-reads the saved headlines (after the agent saved or removed some in chat). */
 export async function listHeadlinesAction(campaignId: string): Promise<SavedHeadline[] | null> {
+  await requireUser();
   if (!id.safeParse(campaignId).success) return null;
   try {
     return await listHeadlines(campaignId);

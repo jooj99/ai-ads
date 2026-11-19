@@ -3,6 +3,7 @@ import { start } from "workflow/api";
 import { claimResearch, getCampaign } from "@/lib/campaigns";
 import { openResearchThread } from "@/lib/agent/research-thread";
 import { researchRun } from "@/workflows/agent";
+import { unauthorized } from "@/lib/supabase/auth";
 
 /**
  * Starts (or restarts) research for a campaign as a durable agent run
@@ -11,6 +12,8 @@ import { researchRun } from "@/workflows/agent";
  * running.
  */
 export async function POST(_req: Request, ctx: RouteContext<"/api/campaigns/[id]/research">) {
+  const denied = await unauthorized();
+  if (denied) return denied;
   const { id } = await ctx.params;
   const campaign = await getCampaign(id).catch(() => null);
   if (!campaign) return Response.json({ error: "Campaign not found" }, { status: 404 });

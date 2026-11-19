@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { listCampaigns } from "@/lib/campaigns";
+import { requireUser } from "@/lib/supabase/auth";
 
 export const metadata: Metadata = { title: "Campaigns" };
 
@@ -38,6 +39,7 @@ export default function CampaignsPage() {
 
 async function CampaignList() {
   await connection(); // always read fresh from the database, never at build time
+  await requireUser(); // the proxy checks too; data reads never rely on it alone
   let campaigns: Awaited<ReturnType<typeof listCampaigns>>;
   try {
     campaigns = await listCampaigns();

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Suspense } from "react";
+import { Suspense, type ReactNode } from "react";
 
 import { PloyAdsLogo, PloyMark } from "@/components/ploy-logo";
 import {
@@ -66,7 +66,8 @@ function Nav({ items }: { items: NavItem[] }) {
   );
 }
 
-export function AppSidebar() {
+/** `account` is the signed-in user's menu, rendered on the server (see app/(app)/layout.tsx). */
+export function AppSidebar({ account }: { account?: ReactNode }) {
   return (
     <Sidebar variant="inset" collapsible="icon">
       <SidebarHeader>
@@ -98,6 +99,7 @@ export function AppSidebar() {
 
       <SidebarFooter>
         <Nav items={footerNav} />
+        {account}
       </SidebarFooter>
 
       <SidebarRail />

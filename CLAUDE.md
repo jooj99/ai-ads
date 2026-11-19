@@ -37,7 +37,15 @@ Next.js 16, the AI SDK and AI Elements change faster than model training data. B
 - Theme tokens in `app/globals.css` mirror ploy.ai's own `--ploy-*` variables: ink `#212121` on a `#f4f4f4` canvas, white surfaces, `#e3e3e3` borders. Brand accents (`brand-yellow`, `brand-pink`, `brand-orange`) are for sparing use.
 - Type: Geist for UI text and small titles (`font-sans` / `font-heading`); `font-display` (Anton, standing in for Ploy's commercial FK Screamer) only for big uppercase page headlines.
 - Buttons are pills (`rounded-full`, edited in `components/ui/button.tsx`); the active sidebar tab is an ink pill.
-- App shell: `app/layout.tsx` wraps every page in `SidebarProvider` → `AppSidebar` + `SidebarInset` (with `SiteHeader`). Nav items live in `lib/nav.ts`.
+- App shell: the signed-in pages live in the `app/(app)/` route group, whose layout wraps them in `SidebarProvider` → `AppSidebar` (with the account menu in its footer) + `SidebarInset` (with `SiteHeader`). `app/layout.tsx` is just html/body; `/login` sits outside the group with no shell. Nav items live in `lib/nav.ts`.
+
+## Auth (one demo user)
+
+- **Supabase Auth, email + password, one user.** `@supabase/ssr` keeps the session in cookies. The auth client (`lib/supabase/auth.ts`) uses the publishable key, so it can sign in but still can't read tables; data stays on the secret-key client. Auth only decides who may use the app, so tables have no `user_id` and RLS stays policy-free.
+- `proxy.ts` runs on every page and API request: it refreshes the session (`getClaims()` verifies the JWT) and sends signed-out visitors to `/login?next=<path>` (pages) or a 401 (API). It skips Next's assets, images in `public/`, and `/.well-known/workflow/*` (the Workflow runtime calls those server-to-server, with its own queue key). Without the public Supabase env vars it fails closed.
+- Checks don't rely on the proxy alone: every route handler starts with `unauthorized()`, every server action and data-loading page with `requireUser()`.
+- `/login` (`app/login/`): `signIn` / `signOut` server actions; `next` only accepts same-site paths. Sign out is in the sidebar's account menu.
+- The demo user is created with `npm run demo-user` (`scripts/create-demo-user.mjs`, admin API, already confirmed; rerun to reset the password) from `DEMO_USER_EMAIL` / `DEMO_USER_PASSWORD` in `.env.local`. There's no sign-up page; public sign-ups should also be off in the Supabase dashboard (Authentication → Sign In / Providers → "Allow new users to sign up"), since the publishable key could otherwise register accounts through the API.
 
 ## Campaigns and brand research
 
@@ -76,6 +84,7 @@ Next.js 16, the AI SDK and AI Elements change faster than model training data. B
 - `npm run dev` — local dev server
 - `npm run build` — production build (run before pushing)
 - `npm run lint` — ESLint
+- `npm run demo-user` — create the demo login (or reset its password) from `.env.local`
 
 ## Working agreements
 

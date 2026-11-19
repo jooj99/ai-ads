@@ -6,6 +6,7 @@ import { agentToolSpecs, type AgentUIMessage } from "@/lib/agent/tools";
 import { getCampaign, getChat, saveChat } from "@/lib/campaigns";
 import { supabase } from "@/lib/supabase/server";
 import { agentTurn } from "@/workflows/agent";
+import { unauthorized } from "@/lib/supabase/auth";
 
 /**
  * Starts one chat turn of the ad agent as a durable workflow run
@@ -17,6 +18,8 @@ import { agentTurn } from "@/workflows/agent";
  * (GET ./<runId>/stream) and interrupt it (DELETE ./<runId>).
  */
 export async function POST(req: Request, ctx: RouteContext<"/api/campaigns/[id]/chat">) {
+  const denied = await unauthorized();
+  if (denied) return denied;
   const { id } = await ctx.params;
   const campaign = await getCampaign(id).catch((error) => {
     console.error("[agent] loading the campaign failed", error);

@@ -7,6 +7,7 @@ import { claimResearch, createCampaign } from "@/lib/campaigns";
 import { CAMPAIGNS_TOPIC, EVENTS, type CampaignChange } from "@/lib/realtime";
 import { supabase } from "@/lib/supabase/server";
 import { normalizeStoreUrl, ResearchInputError } from "@/lib/research/url";
+import { requireUser } from "@/lib/supabase/auth";
 import { researchRun } from "@/workflows/agent";
 import { openResearchThread } from "@/lib/agent/research-thread";
 
@@ -21,6 +22,7 @@ export async function startCampaign(
   _previous: StartCampaignState,
   formData: FormData,
 ): Promise<StartCampaignState> {
+  await requireUser();
   const input = String(formData.get("url") ?? "").slice(0, 2_000);
 
   let url: URL;
