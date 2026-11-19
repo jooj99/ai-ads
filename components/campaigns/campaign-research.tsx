@@ -1,7 +1,5 @@
 "use client";
 
-import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport } from "ai";
 import {
   AlertTriangleIcon,
   CheckCircle2Icon,
@@ -9,12 +7,13 @@ import {
   ExternalLinkIcon,
   Loader2Icon,
   RotateCwIcon,
-  SquareIcon,
   XCircleIcon,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState, useTransition } from "react";
 
+import { updateKitStyleAction } from "@/app/campaigns/actions";
 import {
   ChainOfThought,
   ChainOfThoughtContent,
@@ -22,7 +21,6 @@ import {
   ChainOfThoughtStep,
 } from "@/components/ai-elements/chain-of-thought";
 import { Shimmer } from "@/components/ai-elements/shimmer";
-import { updateKitStyleAction } from "@/app/campaigns/actions";
 import { CampaignTitle } from "@/components/campaigns/campaign-title";
 import { DeleteCampaignButton } from "@/components/campaigns/delete-campaign-button";
 import { BrandKitView } from "@/components/research/brand-kit-view";
@@ -31,14 +29,16 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import type { Campaign } from "@/lib/campaigns";
+import { campaignTopic, EVENTS, type ProgressPayload } from "@/lib/realtime";
 import {
+  STEP_LABELS,
   STEP_ORDER,
   type BrandKit,
   type ResearchNotice,
   type ResearchStep,
-  type ResearchUIMessage,
   type StepStatus,
 } from "@/lib/research/types";
+import { browserSupabase } from "@/lib/supabase/browser";
 import { cn } from "@/lib/utils";
 
 const STATUS_ICON: Record<StepStatus, LucideIcon> = {
@@ -49,66 +49,103 @@ const STATUS_ICON: Record<StepStatus, LucideIcon> = {
   error: XCircleIcon,
 };
 
-/** Reads the live research run out of the streamed UI message. */
-function useLiveResearch(messages: ResearchUIMessage[]) {
-  return useMemo(() => {
-    const message = messages.findLast((m) => m.role === "assistant");
-    if (!message) return null;
-    const steps = new Map<string, ResearchStep>();
-    let kit: BrandKit | undefined;
-    let notice: ResearchNotice | undefined;
-    for (const part of message.parts) {
-      if (part.type === "data-step") steps.set(part.data.id, part.data);
-      if (part.type === "data-brandKit") kit = part.data;
-      if (part.type === "data-notice") notice = part.data;
-    }
-    return {
-      steps: STEP_ORDER.map((id) => steps.get(id)).filter((s): s is ResearchStep => Boolean(s)),
-      kit,
-      notice,
+/** Shown before the first progress broadcast of a run arrives. */
+const STARTING: ProgressPayload = {
+  seq: 0,
+  steps: STEP_ORDER.map((id) => ({ id, label: STEP_LABELS[id], status: "pending" })),
+  kit: null,
+  notice: null,
+};
+
+/** Without Realtime (public env vars missing), refresh saved progress this often. */
+const POLL_MS = 3_000;
+
+/**
+ * Follows a campaign's research run over Supabase Realtime. `live` holds the
+ * latest broadcast while a run is going; when the run finishes the page
+ * re-reads the saved result (with the full catalog) from the server and
+ * drops `live` in the same transition, so nothing flickers.
+ */
+function useResearchRun(campaignId: string, running: boolean) {
+  const router = useRouter();
+  const [live, setLive] = useState<ProgressPayload | null>(null);
+  const [, startTransition] = useTransition();
+  const realtime = useRef(browserSupabase());
+
+  useEffect(() => {
+    const client = realtime.current;
+    if (!client) return;
+    const channel = client
+      .channel(campaignTopic(campaignId))
+      .on("broadcast", { event: EVENTS.progress }, ({ payload }) => {
+        const next = payload as ProgressPayload;
+        // Broadcasts can arrive out of order; never step back to an older one.
+        setLive((current) => (current && current.seq > next.seq ? current : next));
+      })
+      .on("broadcast", { event: EVENTS.finished }, () => {
+        startTransition(() => {
+          router.refresh();
+          setLive(null);
+        });
+      })
+      .subscribe((status) => {
+        // Catch up on anything saved before the subscription was ready.
+        if (status === "SUBSCRIBED") router.refresh();
+      });
+    return () => {
+      void client.removeChannel(channel);
     };
-  }, [messages]);
+  }, [campaignId, router]);
+
+  // Graceful fallback: no Realtime config means polling the saved progress.
+  useEffect(() => {
+    if (realtime.current || !running) return;
+    const timer = setInterval(() => router.refresh(), POLL_MS);
+    return () => clearInterval(timer);
+  }, [running, router]);
+
+  return { live, setLive };
 }
 
 /**
- * A campaign's research. A new campaign starts researching on arrival; the
- * server saves the result to Supabase when the run finishes, so reloading
- * shows the saved kit instead of researching again.
+ * A campaign's research. Runs happen in the background on the server
+ * (started by Start Campaign or "Research again"), so leaving the page never
+ * stops them; this page shows saved progress and follows the live run.
  */
 export function CampaignResearch({
   campaign,
+  stale,
   savedKit,
   savedSteps,
   savedNotice,
 }: {
   campaign: Campaign;
+  /** The saved run says "researching" but has gone quiet for 5+ minutes. */
+  stale: boolean;
   savedKit: BrandKit | null;
   savedSteps: ResearchStep[];
   savedNotice: ResearchNotice | null;
 }) {
-  const [stepsOpen, setStepsOpen] = useState(!savedKit);
-  const { messages, setMessages, sendMessage, status, stop, error } = useChat<ResearchUIMessage>({
-    transport: new DefaultChatTransport({
-      api: "/api/research",
-      body: { campaignId: campaign.id },
-    }),
-  });
-  const live = useLiveResearch(messages);
+  const runningOnServer = campaign.status === "researching" && !stale;
+  const { live, setLive } = useResearchRun(campaign.id, runningOnServer);
+  const running = live !== null || runningOnServer;
 
-  const running = status === "submitted" || status === "streaming";
-  const steps = live?.steps ?? savedSteps;
-  const researchedKit = live ? live.kit : (savedKit ?? undefined);
+  const [stepsOpen, setStepsOpen] = useState(!savedKit);
+  const [startError, setStartError] = useState<string>();
+  const [starting, setStarting] = useState(false);
+
+  const steps = live?.steps.length ? live.steps : savedSteps.length ? savedSteps : running ? STARTING.steps : [];
+  const researchedKit = (live ? live.kit : savedKit) ?? undefined;
   // The user's removals of colors/fonts, applied on top of the researched kit
   // until the next research run replaces it.
   const [edits, setEdits] = useState<{ colors?: BrandKit["colors"]; fonts?: BrandKit["fonts"] }>({});
   const [editError, setEditError] = useState<string>();
   const kit = researchedKit && !running ? { ...researchedKit, ...edits } : researchedKit;
-  const notice = live ? live.notice : (savedNotice ?? undefined);
+  const notice = (live ? live.notice : savedNotice) ?? undefined;
   const fatal = notice?.level === "error" && !kit?.name;
   const insights = steps.find((s) => s.id === "insights");
   // Complete only when the analysis itself succeeded; a failed analysis is "partly complete".
-  const researchDone =
-    !running && !error && (insights?.status === "done" || insights?.status === "warning");
+  const researchDone = !running && (insights?.status === "done" || insights?.status === "warning");
 
   function saveStyle(change: { colors?: BrandKit["colors"]; fonts?: BrandKit["fonts"] }) {
     const previous = edits;
@@ -122,24 +159,27 @@ export function CampaignResearch({
     });
   }
 
-  function research() {
-    if (running) return;
-    setEdits({});
-    setStepsOpen(true);
-    setMessages([]);
-    void sendMessage({ text: campaign.sourceUrl });
+  async function research() {
+    if (running || starting) return;
+    setStarting(true);
+    setStartError(undefined);
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/research`, { method: "POST" });
+      if (res.status === 409) {
+        setStartError("Research is already running for this campaign.");
+      } else if (!res.ok) {
+        setStartError("Couldn't start research. Try again in a moment.");
+      } else {
+        setEdits({});
+        setStepsOpen(true);
+        setLive(STARTING); // until the first broadcast arrives
+      }
+    } catch {
+      setStartError("Couldn't reach the server. Check your connection and try again.");
+    } finally {
+      setStarting(false);
+    }
   }
-
-  // A fresh campaign (nothing saved yet) starts researching as soon as it opens.
-  // useChat stops its request when it unmounts, and React's dev double-mount
-  // unmounts once, so the start is scheduled and cancelled in cleanup: only
-  // the mount that stays sends it. Once it's sent, status leaves "ready".
-  const idle = status === "ready" && messages.length === 0;
-  useEffect(() => {
-    if (!idle || savedKit || campaign.status !== "researching") return;
-    const start = setTimeout(() => void sendMessage({ text: campaign.sourceUrl }), 0);
-    return () => clearTimeout(start);
-  }, [idle, campaign.sourceUrl, campaign.status, savedKit, sendMessage]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -162,17 +202,10 @@ export function CampaignResearch({
         </div>
         <div className="flex items-center gap-1">
           <DeleteCampaignButton campaignId={campaign.id} name={campaign.name} goToList />
-          {running ? (
-            <Button variant="outline" onClick={() => stop()}>
-              <SquareIcon className="size-3.5 fill-current" />
-              Stop
-            </Button>
-          ) : (
-            <Button variant="outline" onClick={research}>
-              <RotateCwIcon />
-              {kit ? "Research again" : "Start research"}
-            </Button>
-          )}
+          <Button variant="outline" onClick={research} disabled={running || starting}>
+            {running || starting ? <Loader2Icon className="animate-spin" /> : <RotateCwIcon />}
+            {running ? "Researching…" : kit ? "Research again" : "Start research"}
+          </Button>
         </div>
       </div>
 
@@ -191,6 +224,13 @@ export function CampaignResearch({
           </h2>
           {researchDone && <CheckCircle2Icon className="size-6 shrink-0" aria-label="Complete" />}
         </div>
+
+        {running && (
+          <p className="-mt-2 text-sm text-muted-foreground">
+            Research runs in the background. You can leave this page; it keeps going and updates
+            live.
+          </p>
+        )}
 
         {steps.length > 0 && (
           <Card className="py-4">
@@ -228,7 +268,20 @@ export function CampaignResearch({
           </Card>
         )}
 
-        {notice && (
+        {stale && !live && (
+          <Alert>
+            <AlertTriangleIcon />
+            <AlertTitle>Research stopped before it finished</AlertTitle>
+            <AlertDescription className="flex flex-col items-start gap-3">
+              <p>The last run went quiet for over 5 minutes and was most likely interrupted.</p>
+              <Button size="sm" variant="outline" onClick={research} disabled={starting}>
+                Restart research
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {notice && !running && (
           <Alert variant={notice.level === "error" ? "destructive" : "default"}>
             {notice.level === "error" ? <XCircleIcon /> : <AlertTriangleIcon />}
             <AlertTitle>
@@ -236,35 +289,29 @@ export function CampaignResearch({
             </AlertTitle>
             <AlertDescription className="flex flex-col items-start gap-3">
               <p>{notice.message}</p>
-              {!running && (
-                <Button size="sm" variant="outline" onClick={research}>
-                  Try again
-                </Button>
-              )}
-            </AlertDescription>
-          </Alert>
-        )}
-
-        {error && (
-          <Alert variant="destructive">
-            <XCircleIcon />
-            <AlertTitle>Connection lost</AlertTitle>
-            <AlertDescription className="flex flex-col items-start gap-3">
-              <p>The research request failed before it finished.</p>
-              <Button size="sm" variant="outline" onClick={research}>
+              <Button size="sm" variant="outline" onClick={research} disabled={starting}>
                 Try again
               </Button>
             </AlertDescription>
           </Alert>
         )}
 
-        {!kit && !running && !notice && !error && (
+        {startError && (
+          <Alert variant="destructive">
+            <XCircleIcon />
+            <AlertTitle>{startError}</AlertTitle>
+          </Alert>
+        )}
+
+        {!kit && !running && !notice && !stale && (
           <Card>
             <CardContent className="flex flex-col items-start gap-3">
               <p className="text-sm text-muted-foreground">
                 Research hasn&apos;t run for this campaign yet.
               </p>
-              <Button onClick={research}>Start research</Button>
+              <Button onClick={research} disabled={starting}>
+                Start research
+              </Button>
             </CardContent>
           </Card>
         )}

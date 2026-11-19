@@ -50,11 +50,18 @@ async function Campaign({ params }: { params: PageProps<"/campaigns/[id]">["para
     <CampaignResearch
       key={research.campaign.id}
       campaign={research.campaign}
+      stale={isStale(research.campaign.status, research.campaign.researchStartedAt)}
       savedKit={research.kit}
       savedSteps={research.steps}
       savedNotice={research.notice}
     />
   );
+}
+
+/** A run that hasn't saved progress for 5 minutes died (claim_research uses the same rule). */
+function isStale(status: string, heartbeat: string | null): boolean {
+  if (status !== "researching" || !heartbeat) return false;
+  return Date.now() - new Date(heartbeat).getTime() > 5 * 60_000;
 }
 
 function CampaignSkeleton() {

@@ -20,9 +20,14 @@ export type Campaign = {
   domain: string;
   status: CampaignStatus;
   createdAt: string;
+  updatedAt: string;
+  /** When the current (or last) research run started; null before the first. */
+  researchStartedAt: string | null;
 };
 
 export type CampaignSummary = Campaign & {
+  /** Label of the research step running now, while researching. */
+  step?: string;
   logo?: string;
   offering?: "goods" | "services";
   productCount: number;
@@ -44,6 +49,8 @@ type CampaignRow = {
   domain: string;
   status: CampaignStatus;
   created_at: string;
+  updated_at: string;
+  research_started_at: string | null;
 };
 
 function toCampaign(row: CampaignRow): Campaign {
@@ -54,6 +61,8 @@ function toCampaign(row: CampaignRow): Campaign {
     domain: row.domain,
     status: row.status,
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    researchStartedAt: row.research_started_at,
   };
 }
 
@@ -71,15 +80,23 @@ export async function createCampaign(url: URL): Promise<Campaign> {
 export async function listCampaigns(): Promise<CampaignSummary[]> {
   const { data, error } = await supabase()
     .from("campaigns")
-    .select("*, brand_kits(logo_url, offering), campaign_products(count)")
+    .select("*, brand_kits(logo_url, offering, research_steps), campaign_products(count)")
     .order("created_at", { ascending: false })
     .limit(100);
   if (error) throw error;
   return (data ?? []).map((row) => {
-    const kit = row.brand_kits as { logo_url: string | null; offering: string | null } | null;
+    const kit = row.brand_kits as {
+      logo_url: string | null;
+      offering: string | null;
+      research_steps: ResearchStep[] | null;
+    } | null;
     const counted = row.campaign_products as { count: number }[] | null;
     return {
       ...toCampaign(row as CampaignRow),
+      step:
+        row.status === "researching"
+          ? kit?.research_steps?.find((s) => s.status === "running")?.label
+          : undefined,
       logo: kit?.logo_url ?? undefined,
       offering: (kit?.offering as CampaignSummary["offering"]) ?? undefined,
       productCount: counted?.[0]?.count ?? 0,
@@ -158,6 +175,76 @@ export async function getCampaignResearch(id: string): Promise<CampaignResearch 
   };
 }
 
+function kitRow(campaignId: string, kit: BrandKit) {
+  return {
+    campaign_id: campaignId,
+    name: kit.name ?? null,
+    tagline: kit.tagline ?? null,
+    platform: kit.platform ?? null,
+    offering: kit.offering ?? null,
+    offering_reason: kit.offeringReason ?? null,
+    logo_url: kit.logo ?? null,
+    logo_candidates: kit.logoCandidates,
+    colors: kit.colors,
+    fonts: kit.fonts,
+    value_proposition: kit.valueProposition ?? null,
+    audience: kit.audience ?? null,
+    voice: kit.voice ?? null,
+    product_types: kit.productTypes,
+    catalog_size: kit.catalogSize ?? null,
+    products_picked_by: kit.productsPickedBy ?? null,
+  };
+}
+
+/**
+ * Claims the campaign for a research run (see claim_research in the
+ * migrations). False means a run is already in progress.
+ */
+export async function claimResearch(id: string): Promise<boolean> {
+  if (!UUID.test(id)) return false;
+  const { data, error } = await supabase().rpc("claim_research", { p_campaign_id: id });
+  if (error) throw error;
+  return data === true;
+}
+
+/**
+ * Saves a run's progress partway through (steps and the kit so far, not the
+ * products), so a reload or another visitor sees where research is.
+ */
+export async function saveProgress(
+  id: string,
+  { kit, steps, notice }: { kit: BrandKit | null; steps: ResearchStep[]; notice: ResearchNotice | null },
+): Promise<void> {
+  const db = supabase();
+  const now = new Date().toISOString();
+  const { error } = await db.from("brand_kits").upsert({
+    ...(kit ? kitRow(id, kit) : { campaign_id: id }),
+    research_steps: steps,
+    research_notice: notice,
+    updated_at: now,
+  });
+  if (error) throw error;
+  // Keeps the run's heartbeat fresh: claim_research treats a run that has
+  // gone quiet for 5 minutes as dead.
+  const { error: beat } = await db
+    .from("campaigns")
+    .update({ research_started_at: now, updated_at: now })
+    .eq("id", id)
+    .eq("status", "researching");
+  if (beat) throw beat;
+}
+
+export async function getCampaign(id: string): Promise<Campaign | null> {
+  if (!UUID.test(id)) return null;
+  const { data, error } = await supabase()
+    .from("campaigns")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle<CampaignRow>();
+  if (error) throw error;
+  return data ? toCampaign(data) : null;
+}
+
 export async function setCampaignStatus(id: string, status: CampaignStatus): Promise<void> {
   const { error } = await supabase()
     .from("campaigns")
@@ -183,27 +270,9 @@ export async function saveResearch(
   const now = new Date().toISOString();
 
   if (kit) {
-    const { error: kitError } = await db.from("brand_kits").upsert({
-      campaign_id: id,
-      name: kit.name ?? null,
-      tagline: kit.tagline ?? null,
-      platform: kit.platform ?? null,
-      offering: kit.offering ?? null,
-      offering_reason: kit.offeringReason ?? null,
-      logo_url: kit.logo ?? null,
-      logo_candidates: kit.logoCandidates,
-      colors: kit.colors,
-      fonts: kit.fonts,
-      value_proposition: kit.valueProposition ?? null,
-      audience: kit.audience ?? null,
-      voice: kit.voice ?? null,
-      product_types: kit.productTypes,
-      catalog_size: kit.catalogSize ?? null,
-      products_picked_by: kit.productsPickedBy ?? null,
-      research_steps: steps,
-      research_notice: notice,
-      updated_at: now,
-    });
+    const { error: kitError } = await db
+      .from("brand_kits")
+      .upsert({ ...kitRow(id, kit), research_steps: steps, research_notice: notice, updated_at: now });
     if (kitError) throw kitError;
 
     // The whole catalog: hero picks first (with their features and reason),

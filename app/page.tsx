@@ -3,6 +3,10 @@ import Image from "next/image";
 import { StartCampaignForm } from "@/components/campaigns/start-campaign-form";
 import balloons from "@/public/brand/ploy-balloons.webp";
 
+// Start Campaign's server action begins research in the background (after());
+// this is how long that background work may run.
+export const maxDuration = 300;
+
 export default function HomePage() {
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-8 p-6 md:p-10">
@@ -25,7 +29,10 @@ export default function HomePage() {
           alt=""
           priority
           sizes="(min-width: 1024px) 768px, 100vw"
-          className="-my-[8%] w-full max-w-3xl select-none"
+          // The PNG is 16:9 with wide transparent bands above and below the
+          // balloons; crop them with object-cover instead of negative margins,
+          // which pushed the image past the page and caused a stray scroll.
+          className="aspect-[8/3] w-full max-w-3xl object-cover select-none"
         />
       </div>
     </div>
