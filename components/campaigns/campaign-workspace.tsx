@@ -9,7 +9,6 @@ import {
   ImageIcon,
   MoreHorizontalIcon,
   PenLineIcon,
-  RotateCwIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
@@ -24,7 +23,6 @@ import {
   updateKitStyleAction,
 } from "@/app/campaigns/actions";
 import { CampaignChat, type HeadlineControls } from "@/components/campaigns/campaign-chat";
-import { CampaignStages, type Stage } from "@/components/campaigns/campaign-stages";
 import { CampaignTitle } from "@/components/campaigns/campaign-title";
 import { DeleteCampaignDialog } from "@/components/campaigns/delete-campaign-button";
 import { WriteOwnForm, type ChoiceSubmission } from "@/components/campaigns/headline-choice";
@@ -36,7 +34,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -322,7 +319,6 @@ export function CampaignWorkspace({
   }
 
   const waiting = pendingChoice(messages);
-  const stage: Stage = !researchDone ? "Research" : headlines.length ? "Generate" : "Headline";
 
   // The chat is always open: during research, a message interrupts the run
   // and the agent carries on from what it has.
@@ -332,7 +328,9 @@ export function CampaignWorkspace({
   const name = campaign.name === campaign.domain && kit?.name ? kit.name : campaign.name;
 
   return (
-    <div className="flex flex-col md:h-[calc(100svh-4.5rem)]">
+    // The tabs' root wraps the page so their buttons can sit in the header
+    // while their content fills the panel on the right.
+    <Tabs defaultValue="brand" className="flex flex-col gap-0 md:h-[calc(100svh-4.5rem)]">
       <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b px-3 py-2.5 md:px-4">
         <Button asChild variant="ghost" size="icon-sm" aria-label="All campaigns">
           <Link href="/campaigns">
@@ -351,7 +349,22 @@ export function CampaignWorkspace({
             <ExternalLinkIcon className="size-3" />
           </a>
         </div>
-        <CampaignStages current={stage} className="hidden lg:flex" />
+        {waiting && <Badge className="bg-brand-yellow text-foreground">Waiting on you</Badge>}
+        <TabsList className="h-8 rounded-full bg-transparent p-0">
+          {[
+            ["brand", "Brand kit"],
+            ["products", kit?.offering === "services" ? "Services" : "Products"],
+            ["ads", "Ads"],
+          ].map(([value, label]) => (
+            <TabsTrigger
+              key={value}
+              value={value}
+              className="h-8 rounded-full px-3.5 data-active:bg-foreground data-active:text-background data-active:shadow-none data-active:hover:text-background"
+            >
+              {label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon-sm" aria-label="Campaign actions">
@@ -359,11 +372,6 @@ export function CampaignWorkspace({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={() => void research()} disabled={running || starting}>
-              <RotateCwIcon />
-              Research again
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onSelect={() => setDeleteOpen(true)}>
               <Trash2Icon />
               Delete campaign
@@ -411,26 +419,7 @@ export function CampaignWorkspace({
         </section>
 
         <section aria-label="Campaign" className="min-h-0 overflow-y-auto bg-muted/60">
-          <Tabs defaultValue="brand" className="@container gap-4 p-4 md:p-6">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <TabsList className="h-9 rounded-full bg-transparent p-0">
-                {[
-                  ["brand", "Brand kit"],
-                  ["products", kit?.offering === "services" ? "Services" : "Products"],
-                  ["ads", "Ads"],
-                ].map(([value, label]) => (
-                  <TabsTrigger
-                    key={value}
-                    value={value}
-                    className="h-9 rounded-full px-4 data-active:bg-foreground data-active:text-background data-active:shadow-none data-active:hover:text-background"
-                  >
-                    {label}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-              {waiting && <Badge className="bg-brand-yellow text-foreground">Waiting on you</Badge>}
-            </div>
-
+          <div className="@container flex flex-col gap-4 p-4 md:p-6">
             {(startError || editError) && (
               <p className="rounded-xl border border-destructive/40 bg-background p-3 text-sm">
                 {startError ?? editError}
@@ -463,10 +452,10 @@ export function CampaignWorkspace({
                 onWrite={(copy) => changeHeadline({ ...copy, source: "user", proposalId: null }, true)}
               />
             </TabsContent>
-          </Tabs>
+          </div>
         </section>
       </div>
-    </div>
+    </Tabs>
   );
 }
 

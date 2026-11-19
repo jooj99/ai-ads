@@ -137,7 +137,7 @@ export function BrandKitView({
     <div className="flex flex-col gap-4">
       <IdentityRow kit={kit} pending={pending} />
 
-      {/* Colors and fonts share a row; the audience gets its own. */}
+      {/* Colors and fonts share a row. */}
       <div className="grid gap-4 @lg:grid-cols-2">
         <Section title="Colors" source="site" edited={isEdited(kit, "colors")}>
           {kit.colors.length ? (
@@ -190,29 +190,32 @@ export function BrandKitView({
         </Section>
       </div>
 
-      <Section title="Audience" source="ai" edited={isEdited(kit, "audience.segments")}>
-        {kit.audience?.segments?.length || (!pending && changeAudience) ? (
-          <AudienceTags segments={kit.audience?.segments ?? []} onChange={changeAudience} />
-        ) : pending ? (
-          <div className="flex flex-wrap gap-1.5">
-            {[20, 28, 24, 16].map((w) => (
-              <Skeleton key={w} className="h-6 rounded-full" style={{ width: `${w * 4}px` }} />
-            ))}
-          </div>
-        ) : (
-          <Empty>Not available.</Empty>
-        )}
-      </Section>
+      {/* Audience and voice share a row too. */}
+      <div className="grid gap-4 @lg:grid-cols-2">
+        <Section title="Audience" source="ai" edited={isEdited(kit, "audience.segments")}>
+          {kit.audience?.segments?.length || (!pending && changeAudience) ? (
+            <AudienceTags segments={kit.audience?.segments ?? []} onChange={changeAudience} />
+          ) : pending ? (
+            <div className="flex flex-wrap gap-1.5">
+              {[20, 28, 24, 16].map((w) => (
+                <Skeleton key={w} className="h-6 rounded-full" style={{ width: `${w * 4}px` }} />
+              ))}
+            </div>
+          ) : (
+            <Empty>Not available.</Empty>
+          )}
+        </Section>
 
-      <Section title="Voice" source="ai" edited={isEdited(kit, "voice.summary", "voice.traits")}>
-        {kit.voice?.summary ? (
-          <p className="text-sm">{kit.voice.summary}</p>
-        ) : pending ? (
-          <Lines count={2} />
-        ) : (
-          <Empty>Not available.</Empty>
-        )}
-      </Section>
+        <Section title="Voice" source="ai" edited={isEdited(kit, "voice.summary", "voice.traits")}>
+          {kit.voice?.summary ? (
+            <p className="text-sm">{kit.voice.summary}</p>
+          ) : pending ? (
+            <Lines count={2} />
+          ) : (
+            <Empty>Not available.</Empty>
+          )}
+        </Section>
+      </div>
     </div>
   );
 }
