@@ -6,14 +6,41 @@ import { useRef, useState, useTransition, type KeyboardEvent } from "react";
 import { renameCampaignAction } from "@/app/campaigns/actions";
 import { cn } from "@/lib/utils";
 
-const TITLE = "font-display text-5xl leading-none uppercase md:text-6xl";
+const SIZES = {
+  page: {
+    title: "font-display text-5xl leading-none uppercase md:text-6xl",
+    // Hover/edit padding, offset by negative margins so the text stays aligned.
+    box: "-mx-3 -my-1.5 px-3 py-1.5",
+    input: "w-[calc(100%+1.5rem)]",
+    pencil: "ml-3 size-6 -translate-y-1",
+  },
+  header: {
+    // The display face's line box is much taller than its capitals, which
+    // pushes them off-center next to icons; trim it to cap height so the
+    // title centers in the bar like everything else.
+    title: "font-display text-2xl leading-none uppercase [text-box:trim-both_cap_alphabetic]",
+    box: "-mx-2 -my-1 px-2 py-1.5",
+    input: "w-[calc(100%+1rem)]",
+    pencil: "ml-2 size-3.5",
+  },
+};
 
 /**
  * The campaign's name; click it to rename. Enter or clicking away saves,
  * Escape cancels. The new name shows immediately and rolls back if the save
  * fails.
  */
-export function CampaignTitle({ campaignId, name }: { campaignId: string; name: string }) {
+export function CampaignTitle({
+  campaignId,
+  name,
+  size = "page",
+}: {
+  campaignId: string;
+  name: string;
+  /** "header" for the compact campaign workspace bar. */
+  size?: keyof typeof SIZES;
+}) {
+  const TITLE = SIZES[size].title;
   const [current, setCurrent] = useState(name);
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string>();
@@ -63,11 +90,13 @@ export function CampaignTitle({ campaignId, name }: { campaignId: string; name: 
           className={cn(
             TITLE,
             // Same padding and offset as the button, so the text doesn't jump.
-            "-mx-3 -my-1.5 w-[calc(100%+1.5rem)] min-w-0 rounded-lg bg-muted px-3 py-1.5 outline-none ring-2 ring-ring/40",
+            SIZES[size].box,
+            SIZES[size].input,
+            "min-w-0 rounded-lg bg-muted outline-none ring-2 ring-ring/40",
           )}
         />
       ) : (
-        <h1 className="min-w-0">
+        <h1 className="flex min-w-0">
           {/* Inline layout: the name wraps only between words (a flex item that
               may shrink can break mid-word), and the pencil follows the last
               word inside the padded hover area. The negative margin keeps the
@@ -78,14 +107,18 @@ export function CampaignTitle({ campaignId, name }: { campaignId: string; name: 
             title="Click to rename"
             className={cn(
               TITLE,
-              "group -mx-3 -my-1.5 max-w-[calc(100%+1.5rem)] rounded-lg px-3 py-1.5 text-left break-words hover:bg-muted focus-visible:bg-muted focus-visible:outline-none",
+              SIZES[size].box,
+              "group max-w-[calc(100%+1.5rem)] rounded-lg text-left break-words hover:bg-muted focus-visible:bg-muted focus-visible:outline-none",
               saving && "opacity-60",
             )}
           >
             {current}
             <PencilIcon
               aria-hidden="true"
-              className="ml-3 inline-block size-6 -translate-y-1 align-middle opacity-0 transition-opacity group-hover:opacity-60 group-focus-visible:opacity-60"
+              className={cn(
+                SIZES[size].pencil,
+                "inline-block align-middle opacity-0 transition-opacity group-hover:opacity-60 group-focus-visible:opacity-60",
+              )}
             />
             <span className="sr-only">Rename campaign</span>
           </button>

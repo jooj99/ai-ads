@@ -37,8 +37,54 @@ export function DeleteCampaignButton({
   goToList?: boolean;
   className?: string;
 }) {
-  const router = useRouter();
   const [open, setOpen] = useState(false);
+  return (
+    <DeleteCampaignDialog
+      campaignId={campaignId}
+      name={name}
+      goToList={goToList}
+      open={open}
+      onOpenChange={setOpen}
+    >
+      {compact ? (
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label={`Delete ${name}`}
+          className={cn("text-muted-foreground hover:text-destructive", className)}
+        >
+          <Trash2Icon />
+        </Button>
+      ) : (
+        <Button variant="ghost" className={cn("text-muted-foreground hover:text-destructive", className)}>
+          <Trash2Icon />
+          Delete
+        </Button>
+      )}
+    </DeleteCampaignDialog>
+  );
+}
+
+/**
+ * The confirmation dialog on its own, controlled by the caller, so a menu
+ * item can open it. `children`, if given, is the trigger.
+ */
+export function DeleteCampaignDialog({
+  campaignId,
+  name,
+  goToList = false,
+  open,
+  onOpenChange,
+  children,
+}: {
+  campaignId: string;
+  name: string;
+  goToList?: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  children?: React.ReactNode;
+}) {
+  const router = useRouter();
   const [error, setError] = useState<string>();
   const [deleting, startDeleting] = useTransition();
 
@@ -51,36 +97,20 @@ export function DeleteCampaignButton({
         setError(result.error);
         return;
       }
-      setOpen(false);
+      onOpenChange(false);
       if (goToList) router.push("/campaigns");
     });
   }
 
   return (
-    <AlertDialog open={open} onOpenChange={setOpen}>
-      <AlertDialogTrigger asChild>
-        {compact ? (
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label={`Delete ${name}`}
-            className={cn("text-muted-foreground hover:text-destructive", className)}
-          >
-            <Trash2Icon />
-          </Button>
-        ) : (
-          <Button variant="ghost" className={cn("text-muted-foreground hover:text-destructive", className)}>
-            <Trash2Icon />
-            Delete
-          </Button>
-        )}
-      </AlertDialogTrigger>
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      {children && <AlertDialogTrigger asChild>{children}</AlertDialogTrigger>}
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Delete “{name}”?</AlertDialogTitle>
           <AlertDialogDescription>
-            This permanently deletes the campaign with its brand kit and products. It can&apos;t be
-            undone.
+            This permanently deletes the campaign with its brand kit, products and chat. It
+            can&apos;t be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {error && <p className="text-sm text-destructive">{error}</p>}

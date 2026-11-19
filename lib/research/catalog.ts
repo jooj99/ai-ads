@@ -38,10 +38,12 @@ export async function pickSiteLinks({
   url,
   page,
   offering,
+  guidance,
 }: {
   url: URL;
   page: PageResearch;
   offering: Offering;
+  guidance?: string;
 }): Promise<LinkPicks | null> {
   const candidates = pickerCandidates(url, page);
   if (candidates.length === 0) return null;
@@ -51,6 +53,7 @@ export async function pickSiteLinks({
       offering,
       navigation: page.navigation,
       candidates,
+      guidance,
     });
     return picks.offerings.length > 0 || picks.indexes.length > 0 ? picks : null;
   } catch (error) {
@@ -60,7 +63,7 @@ export async function pickSiteLinks({
 }
 
 /** Same-site pages other than the homepage and obvious utility pages, without #fragments. */
-function pickerCandidates(url: URL, page: PageResearch): CandidateLink[] {
+export function pickerCandidates(url: URL, page: PageResearch): CandidateLink[] {
   const host = bareHost(url.href);
   const home = url.pathname.replace(/\/$/, "");
   const seen = new Set<string>();
@@ -613,6 +616,25 @@ export function pickPhotoExclusions(
   return excluded;
 }
 
+/**
+ * The shared-photo rule applied to a whole merged catalog (items from several
+ * research runs or pages): a picture on two or more items, the share image,
+ * the logo or a video is nobody's photo. Returns new photos by item id, for
+ * the items whose photos changed.
+ */
+export function sharedPhotoCleanup(
+  items: { id: string; images: string[] }[],
+  page: PageResearch | null,
+): Map<string, string[]> {
+  const cleaned = withoutSiteChrome(items as Product[], page ? notItemPhotos(page) : new Set());
+  const changed = new Map<string, string[]>();
+  cleaned.forEach((item, i) => {
+    const images = item.images.filter(isPhoto);
+    if (images.length !== items[i].images.length) changed.set(item.id, images);
+  });
+  return changed;
+}
+
 function notItemPhotos(page: PageResearch): Set<string> {
   return new Set(
     [page.shareImage, ...page.logoCandidates]
@@ -624,7 +646,9 @@ function notItemPhotos(page: PageResearch): Set<string> {
 /** Drops logos, icons, sprites and tracking pixels; keeps real photography. */
 function isPhoto(src: string): boolean {
   const path = src.split("?")[0].toLowerCase();
-  if (src.startsWith("data:") || /\.(svg|ico|gif)$/.test(path)) return false;
+  if (src.startsWith("data:") || /\.(svg|ico|gif|mp4|webm|mov|m4v)$/.test(path)) return false;
+  // Video thumbnails (YouTube embeds) show a video's frame, not the item.
+  if (/(^|\/\/)(i\d?\.)?ytimg\.com\/|\/(mq|hq|sd|maxres)?default\.jpg$/.test(path)) return false;
   // Unrendered template placeholders from raw HTML, e.g. {{variantImageURL}}.
   if (/%7b%7b|\{\{|\$\{|%24%7b/i.test(src)) return false;
   // Third-party widgets (survey popups, ad and analytics pixels) aren't product photos.

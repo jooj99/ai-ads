@@ -1,5 +1,3 @@
-import type { UIMessage } from "ai";
-
 /** The research pipeline's stages, in display order. */
 export type StepId = "detect" | "brand" | "offering" | "catalog" | "insights";
 export type StepStatus = "pending" | "running" | "done" | "warning" | "error";
@@ -43,10 +41,27 @@ export type SelectedProduct = Product & {
 export type ProductType = { name: string; summary?: string };
 
 /** Any catalog item, tagged with its type; heroes are also in `products`. */
-export type CatalogItem = Product & { typeName?: string; isHero?: boolean };
+export type CatalogItem = Product & {
+  typeName?: string;
+  isHero?: boolean;
+  /** Who added it: research, or the agent or user on request. */
+  origin?: "research" | "agent" | "user";
+};
 
 export type BrandColor = { hex: string; role: string };
-export type BrandFont = { family: string; role: string };
+/**
+ * One font file for a brand font, scraped from the site's @font-face rules.
+ * `source` is where the site serves it; once research copies it into our
+ * storage, `url` is where we serve it (`/api/campaigns/<id>/fonts/<file>`).
+ */
+export type FontFile = { weight: number; style: "normal" | "italic"; source: string; url?: string };
+
+export type BrandFont = {
+  family: string;
+  role: string;
+  /** The site's own files for this font (regular and bold), when it serves them. */
+  files?: FontFile[];
+};
 
 /**
  * Everything research learns about a brand. Scraped facts (logo, colors,
@@ -79,22 +94,14 @@ export type BrandKit = {
   catalog?: CatalogItem[];
   /** "ai" when the model chose the products; "default" when it couldn't and we fell back. */
   productsPickedBy?: "ai" | "default";
+  /** Fields the user or agent edited (research re-runs leave these alone), e.g. "colors". */
+  edited?: string[];
 };
 
 export type ResearchNotice = {
   level: "error" | "warning";
   message: string;
 };
-
-/** The UI message streamed by /api/research: data parts only, no chat text. */
-export type ResearchUIMessage = UIMessage<
-  never,
-  {
-    step: ResearchStep;
-    brandKit: BrandKit;
-    notice: ResearchNotice;
-  }
->;
 
 export const STEP_LABELS: Record<StepId, string> = {
   detect: "Reading the store",

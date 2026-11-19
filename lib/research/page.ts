@@ -3,6 +3,8 @@ import Firecrawl, { type BrandingProfile } from "@mendable/firecrawl-js";
 import {
   cleanFontFamily,
   collectHtmlSignals,
+  fetchStylesheets,
+  fontFilesFor,
   extractLayoutSections,
   fetchHtml,
   looksInternalFont,
@@ -101,10 +103,19 @@ export async function researchPage(fc: Firecrawl | null, url: URL): Promise<Page
     }
   }
 
+  // The site's stylesheets: always read now, for its @font-face files (and
+  // for the HTML extractor below when the brand extractor left gaps).
+  const sheets = html
+    ? await fetchStylesheets(html, base).catch((error) => {
+        console.error("[research] stylesheet fetch failed", error);
+        return [];
+      })
+    : [];
+
   let signals: HtmlSignals | null = null;
   if (html && (!read || brandGaps(read).length > 0)) {
     try {
-      signals = await collectHtmlSignals(html, base);
+      signals = await collectHtmlSignals(html, base, sheets);
     } catch (error) {
       console.error("[research] html extraction failed", error);
     }
@@ -142,6 +153,9 @@ export async function researchPage(fc: Firecrawl | null, url: URL): Promise<Page
     fonts = signals.fonts;
     if (read) filled.push("fonts (stylesheets)");
   }
+  // Attach the site's own font files, so previews (and ads) can use the real
+  // face even when Google Fonts doesn't have it.
+  if (html) fonts = fontFilesFor(fonts, html, base, sheets);
 
   return {
     source: read ? "firecrawl" : "html",

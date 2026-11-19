@@ -14,7 +14,8 @@ export const RESEARCH_MODEL = process.env.RESEARCH_MODEL ?? "anthropic/claude-so
 /** Up to this size the model lists every item's type by id; above it, by listed type values. */
 export const SMALL_CATALOG = 60;
 
-export const insightsSchema = z.object({
+/** The brand half of research: who the brand is and how it sounds. */
+export const brandInsightsSchema = z.object({
   brandName: z
     .string()
     .describe("The brand's name as customers know it, without legal marks or taglines."),
@@ -29,8 +30,14 @@ export const insightsSchema = z.object({
   audience: z.object({
     summary: z
       .string()
-      .describe("Who buys from this brand and what they care about, in one or two sentences."),
-    segments: z.array(z.string()).describe("2 to 4 short audience segments, e.g. 'Busy parents'."),
+      .describe(
+        "Who buys from this brand and what they care about, in one or two sentences. Not shown to the user; it briefs the ad agent.",
+      ),
+    segments: z
+      .array(z.string())
+      .describe(
+        "3 to 6 audience tags shown to the user, each 1 to 4 words in sentence case, e.g. 'Busy parents', 'Gen Z gifters'. Distinct groups, no overlap.",
+      ),
   }),
   voice: z.object({
     summary: z
@@ -41,6 +48,10 @@ export const insightsSchema = z.object({
       .string()
       .describe("One example ad headline written in this voice, at most 10 words."),
   }),
+});
+
+/** The catalog half: the catalog's kinds of product and the heroes to feature. */
+export const catalogGroupingSchema = z.object({
   productTypes: z
     .array(
       z.object({
@@ -84,48 +95,87 @@ export const insightsSchema = z.object({
     ),
 });
 
-export type Insights = z.infer<typeof insightsSchema>;
+export type BrandInsights = z.infer<typeof brandInsightsSchema>;
+export type CatalogGrouping = z.infer<typeof catalogGroupingSchema>;
 
 const NOUNS: Record<Offering, { item: string; items: string; catalog: string }> = {
   goods: { item: "product", items: "products", catalog: "Product catalog" },
   services: { item: "service", items: "services", catalog: "Service catalog" },
 };
 
-function instructions(offering: Offering) {
-  const n = NOUNS[offering];
-  return `You are a brand strategist preparing a brand kit for performance ad creatives.
-This business sells ${offering}. Read its homepage, navbar, footer and ${n.item} catalog, then describe the brand, organize its ${n.items} into types and pick the ${n.items} to advertise.
-Ground every claim in the provided content; when you infer (audience, voice), infer from the copy, ${n.items} and prices.
-Never invent ${n.items}: ids must come from the catalog exactly.`;
-}
-
 const MAX_CONTENT_CHARS = 20_000;
 const MAX_CATALOG_CHARS = 60_000;
+/** The brand call sees a sample of the catalog, enough to judge range and price. */
+const BRAND_CATALOG_CHARS = 8_000;
 
-/** Streams brand insights; the caller reads `partialOutputStream` then `output`. */
-export function streamInsights({
-  domain,
-  page,
-  products,
-  offering,
-  audiencePages = [],
-}: {
+type InsightsInput = {
   domain: string;
   page: PageResearch | null;
   products: Product[];
   offering: Offering;
   /** Labels of the site's pages about who it serves, e.g. "Hospitals", "For agencies". */
   audiencePages?: string[];
-}) {
-  const n = NOUNS[offering];
+  /** Direction from the agent or user, e.g. "group cases by phone model". Followed when it fits the facts. */
+  guidance?: string;
+};
 
-  const prompt = [
+/**
+ * Streams the brand insights: name, tagline, value proposition, audience and
+ * voice. The caller reads `partialOutputStream`, then `output`.
+ */
+export function streamBrandInsights(input: InsightsInput) {
+  const n = NOUNS[input.offering];
+  return streamText({
+    model: RESEARCH_MODEL,
+    instructions: `You are a brand strategist preparing a brand kit for performance ad creatives.
+This business sells ${input.offering}. Read its homepage, navbar, footer and a sample of its ${n.item} catalog, then describe the brand: its name, tagline, value proposition, audience and voice.
+Ground every claim in the provided content; when you infer (audience, voice), infer from the copy, ${n.items} and prices.`,
+    prompt: promptFor(input, { contentChars: MAX_CONTENT_CHARS, catalogChars: BRAND_CATALOG_CHARS }),
+    output: Output.object({ schema: brandInsightsSchema }),
+    // Stream errors don't throw; without this the cause (e.g. a Gateway
+    // billing or rate-limit error) is lost behind NoOutputGeneratedError.
+    onError: ({ error }) => console.error("[research] brand insights stream error", error),
+  });
+}
+
+/**
+ * Streams the catalog grouping: at most 10 kinds of product or service, each
+ * with its members and 1–2 hero picks. Only ids from the catalog count; the
+ * caller matches them back to the real items.
+ */
+export function streamCatalogGrouping(input: InsightsInput) {
+  const n = NOUNS[input.offering];
+  return streamText({
+    model: RESEARCH_MODEL,
+    instructions: `You are a brand strategist choosing what to advertise.
+This business sells ${input.offering}. Organize its whole ${n.item} catalog into kinds of ${n.item} and pick the ${n.items} to feature in ads.
+Use the navbar and footer as the brand's own category list.
+Never invent ${n.items}: ids must come from the catalog exactly.`,
+    prompt: promptFor(input, { contentChars: 5_000, catalogChars: MAX_CATALOG_CHARS }),
+    output: Output.object({ schema: catalogGroupingSchema }),
+    onError: ({ error }) => console.error("[research] catalog grouping stream error", error),
+  });
+}
+
+function promptFor(
+  { domain, page, products, offering, audiencePages = [], guidance }: InsightsInput,
+  { contentChars, catalogChars }: { contentChars: number; catalogChars: number },
+): string {
+  const n = NOUNS[offering];
+  return [
     `Website: ${domain}`,
     page?.title && `Page title: ${page.title}`,
     page?.description && `Meta description: ${page.description}`,
     page?.siteName && `Site name: ${page.siteName}`,
     page?.styleHints && `Style analysis of the rendered site: ${page.styleHints}`,
     "",
+    ...(guidance?.trim()
+      ? [
+          "## Direction from the marketer (follow it where the content supports it; never invent facts or ids for it)",
+          guidance.trim(),
+          "",
+        ]
+      : []),
     "## Navbar",
     page?.navigation || "(none found)",
     "",
@@ -140,26 +190,16 @@ export function streamInsights({
         ]
       : []),
     "## Homepage content",
-    page?.content ? page.content.slice(0, MAX_CONTENT_CHARS) : "(The homepage could not be read.)",
+    page?.content ? page.content.slice(0, contentChars) : "(The homepage could not be read.)",
     "",
     `## ${n.catalog}: types across all ${products.length} ${n.items}`,
     typeSummary(products) || "(No types listed.)",
     "",
     `## ${n.catalog} (id | title | type | price | tags | photos | description)`,
-    catalogForPrompt(products) || `(No ${n.items} were found.)`,
+    catalogForPrompt(products, catalogChars) || `(No ${n.items} were found.)`,
   ]
     .filter((line): line is string => typeof line === "string")
     .join("\n");
-
-  return streamText({
-    model: RESEARCH_MODEL,
-    instructions: instructions(offering),
-    prompt,
-    output: Output.object({ schema: insightsSchema }),
-    // Stream errors don't throw; without this the cause (e.g. a Gateway
-    // billing or rate-limit error) is lost behind NoOutputGeneratedError.
-    onError: ({ error }) => console.error("[research] insights stream error", error),
-  });
 }
 
 /**
@@ -179,7 +219,7 @@ function typeSummary(products: Product[]): string {
     .join("; ");
 }
 
-function catalogForPrompt(products: Product[]): string {
+function catalogForPrompt(products: Product[], maxChars: number): string {
   let out = "";
   for (const p of products) {
     const line = [
@@ -191,7 +231,7 @@ function catalogForPrompt(products: Product[]): string {
       `${p.images.length} photos`,
       (p.description ?? "").slice(0, 180),
     ].join(" | ");
-    if (out.length + line.length > MAX_CATALOG_CHARS) break;
+    if (out.length + line.length > maxChars) break;
     out += line + "\n";
   }
   return out.trim();

@@ -63,9 +63,12 @@ export async function classifyLinks({
   offering,
   navigation,
   candidates,
+  guidance,
 }: {
   domain: string;
   offering: Offering;
+  /** Direction from the agent or user, e.g. "only the phone case pages". */
+  guidance?: string;
   /** The navbar's labels in order, so the model can see how menus group links. */
   navigation: string;
   candidates: CandidateLink[];
@@ -81,9 +84,12 @@ This business sells ${offering}. Judge each link by its label, its path and wher
 A software company's products are often named modules ("Records", "Dispatch", "Intelligence"); those are offerings.
 Features of the site itself (compliance, security, integrations, migration) are not offerings unless the link is to a page selling them.
 Sales and promotions (Black Friday, Cyber Monday, holiday deals, "Sale", clearance, "New arrivals", "Best sellers", gift guides) are not offerings or indexes: they cut across what the business sells. Prefer the permanent pages for each kind of product or service.`,
-    prompt: [`Website: ${domain}`, navigation && `Navbar labels in order: ${navigation}`, "", "Links:", list]
-      .filter((line): line is string => typeof line === "string")
-      .join("\n"),
+    prompt: withGuidance(
+      [`Website: ${domain}`, navigation && `Navbar labels in order: ${navigation}`, "", "Links:", list]
+        .filter((line): line is string => typeof line === "string")
+        .join("\n"),
+      guidance,
+    ),
     output: Output.object({ schema: pickSchema }),
   });
 
@@ -103,6 +109,14 @@ Sales and promotions (Black Friday, Cyber Monday, holiday deals, "Sale", clearan
     else picks.audience.push(link);
   }
   return picks;
+}
+
+
+/** Appends direction from the agent or user to a prompt, framed so it can't override the facts. */
+function withGuidance(prompt: string, guidance?: string): string {
+  return guidance?.trim()
+    ? `${prompt}\n\nDirection from the marketer (follow it where the content supports it): ${guidance.trim()}`
+    : prompt;
 }
 
 function pathOf(url: string): string {

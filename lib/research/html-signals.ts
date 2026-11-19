@@ -53,12 +53,19 @@ export async function fetchHtml(url: URL): Promise<{ html: string; base: string 
 }
 
 /** Extracts signals from the HTML plus up to four of its linked stylesheets. */
-export async function collectHtmlSignals(html: string, base: string): Promise<HtmlSignals> {
-  const css = await fetchStylesheets(html, base);
+export async function collectHtmlSignals(
+  html: string,
+  base: string,
+  sheets?: Stylesheet[],
+): Promise<HtmlSignals> {
+  const css = (sheets ?? (await fetchStylesheets(html, base))).map((s) => s.css).join("\n");
   return extractHtmlSignals(html, base, css);
 }
 
-async function fetchStylesheets(html: string, base: string): Promise<string> {
+/** A stylesheet and the URL it came from (relative url()s resolve against it). */
+export type Stylesheet = { href: string; css: string };
+
+export async function fetchStylesheets(html: string, base: string): Promise<Stylesheet[]> {
   const host = new URL(base).hostname.replace(/^www\./, "");
   const hrefs = unique(
     [...html.matchAll(/<link\b[^>]*>/gi)]
@@ -76,11 +83,11 @@ async function fetchStylesheets(html: string, base: string): Promise<string> {
         headers: { "user-agent": UA },
         signal: AbortSignal.timeout(6_000),
       });
-      if (!res.ok) return "";
-      return (await res.text()).slice(0, MAX_CSS_BYTES);
+      if (!res.ok) return null;
+      return { href: res.url || href, css: (await res.text()).slice(0, MAX_CSS_BYTES) };
     }),
   );
-  return sheets.map((s) => (s.status === "fulfilled" ? s.value : "")).join("\n");
+  return sheets.flatMap((s) => (s.status === "fulfilled" && s.value ? [s.value] : []));
 }
 
 /** Pure extraction, separated from fetching so it can be tested on fixtures. */
@@ -591,4 +598,117 @@ function mostFrequent(values: string[], limit: number): string[] {
     .sort((a, b) => b[1] - a[1])
     .slice(0, limit)
     .map(([v]) => v);
+}
+
+// --- font files ---------------------------------------------------------------
+
+type ParsedFontFace = { family: string; weight: [number, number]; style: "normal" | "italic"; url: string; latin: boolean };
+
+/** Preferred font formats, best first; EOT and SVG fonts are skipped. */
+const FONT_FORMATS = ["woff2", "woff", "truetype", "opentype"];
+
+/**
+ * The site's own font files for each brand font, from the @font-face rules in
+ * its inline styles and stylesheets. For each font: a regular (closest to
+ * 400) and a bold (closest to 700) upright file, preferring WOFF2 and the
+ * Latin subset. Names are matched loosely ("Exo 2" = "Exo2"), including
+ * internal aliases resolved through their file names.
+ */
+export function fontFilesFor(
+  fonts: BrandFont[],
+  html: string,
+  base: string,
+  sheets: Stylesheet[],
+): BrandFont[] {
+  const inline = [...html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)].map((m) => m[1]).join("\n");
+  const faces = [
+    ...parseFontFaces(inline, base),
+    ...sheets.flatMap((sheet) => parseFontFaces(sheet.css, sheet.href)),
+  ];
+  const aliases = fontFaceAliases([inline, ...sheets.map((s) => s.css)].join("\n"));
+  const key = (name: string) => name.toLowerCase().replace(/[\s_-]+/g, "");
+
+  return fonts.map((font) => {
+    const own = faces.filter(
+      (f) =>
+        f.style === "normal" &&
+        (key(f.family) === key(font.family) || key(readableFontName(f.family, aliases)) === key(font.family)),
+    );
+    if (!own.length) return font;
+    const pick = (weight: number) =>
+      [...own].sort(
+        (a, b) =>
+          distance(a.weight, weight) - distance(b.weight, weight) || Number(b.latin) - Number(a.latin),
+      )[0];
+    const regular = pick(400);
+    const bold = pick(700);
+    const files = [regular, bold]
+      .filter((f, i, all) => all.findIndex((x) => x.url === f.url) === i)
+      .map((f) => ({
+        weight: f === regular ? clampWeight(400, f.weight) : clampWeight(700, f.weight),
+        style: "normal" as const,
+        source: f.url,
+      }));
+    return { ...font, files };
+  });
+}
+
+function parseFontFaces(css: string, base: string): ParsedFontFace[] {
+  const faces: ParsedFontFace[] = [];
+  for (const block of css.matchAll(/@font-face\s*\{([^}]*)\}/gi)) {
+    const body = block[1];
+    const family = cleanFontFamily(body.match(/font-family\s*:\s*([^;]+)/i)?.[1]);
+    const src = body.match(/(?:^|;)\s*src\s*:\s*([^;]+)/i)?.[1];
+    if (!family || !src) continue;
+    // src lists alternatives: url(a.woff2) format("woff2"), url(a.woff) format("woff")
+    const options = [...src.matchAll(/url\(\s*["']?([^"')]+)["']?\s*\)\s*(?:format\(\s*["']?([\w-]+)["']?\s*\))?/gi)]
+      .map((m) => ({ url: m[1], format: (m[2] ?? formatFromUrl(m[1])).toLowerCase() }))
+      .filter((o) => FONT_FORMATS.includes(o.format) && !o.url.startsWith("data:"))
+      .sort((a, b) => FONT_FORMATS.indexOf(a.format) - FONT_FORMATS.indexOf(b.format));
+    const url = options[0] ? absoluteUrl(options[0].url, base) : undefined;
+    if (!url || !isPublicHttpUrl(url)) continue;
+    const weights = (body.match(/font-weight\s*:\s*([^;]+)/i)?.[1] ?? "400")
+      .trim()
+      .split(/\s+/)
+      .map((w) => (w === "normal" ? 400 : w === "bold" ? 700 : Number(w)))
+      .filter((w) => Number.isFinite(w));
+    const range = body.match(/unicode-range\s*:\s*([^;]+)/i)?.[1];
+    faces.push({
+      family,
+      weight: [weights[0] ?? 400, weights[1] ?? weights[0] ?? 400],
+      style: /font-style\s*:\s*(italic|oblique)/i.test(body) ? "italic" : "normal",
+      url,
+      // No range means the whole font; otherwise it should cover basic Latin.
+      latin: !range || coversLatin(range),
+    });
+  }
+  return faces;
+}
+
+/**
+ * Whether a unicode-range includes basic Latin letters (checks "A", U+0041).
+ * Handles single points, ranges and wildcards: "U+0000-00FF", "U+20-7E", "U+??".
+ */
+function coversLatin(range: string): boolean {
+  return range.split(",").some((token) => {
+    const m = token.trim().match(/^U\+([0-9a-f?]+)(?:-([0-9a-f]+))?$/i);
+    if (!m) return false;
+    const lo = parseInt(m[1].replace(/\?/g, "0"), 16);
+    const hi = m[2] ? parseInt(m[2], 16) : parseInt(m[1].replace(/\?/g, "f"), 16);
+    return lo <= 0x41 && 0x41 <= hi;
+  });
+}
+
+function formatFromUrl(url: string): string {
+  const ext = url.split("?")[0].split(".").pop()?.toLowerCase();
+  return ext === "ttf" ? "truetype" : ext === "otf" ? "opentype" : (ext ?? "");
+}
+
+function distance([min, max]: [number, number], weight: number) {
+  return weight < min ? min - weight : weight > max ? weight - max : 0;
+}
+
+/** The weight a file renders `want` at: inside a variable range, `want` itself. */
+function clampWeight(want: number, [min, max]: [number, number]) {
+  return Math.min(Math.max(want, min), max);
 }

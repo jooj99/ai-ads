@@ -1,32 +1,20 @@
-import { ArrowLeftIcon } from "lucide-react";
 import type { Metadata } from "next";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
 import { Suspense } from "react";
 
-import { CampaignResearch } from "@/components/campaigns/campaign-research";
-import { Button } from "@/components/ui/button";
+import { CampaignWorkspace } from "@/components/campaigns/campaign-workspace";
 import { Skeleton } from "@/components/ui/skeleton";
-import { getCampaignResearch } from "@/lib/campaigns";
+import { getCampaignResearch, getChat, listHeadlines } from "@/lib/campaigns";
 
 export const metadata: Metadata = { title: "Campaign" };
 
 export default function CampaignPage({ params }: PageProps<"/campaigns/[id]">) {
   return (
-    <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-4 p-6 md:p-10">
-      {/* Outside Suspense, so it's part of the static shell and shows instantly. */}
-      <Button asChild variant="ghost" size="sm" className="-ml-2.5 w-fit text-muted-foreground">
-        <Link href="/campaigns">
-          <ArrowLeftIcon />
-          All campaigns
-        </Link>
-      </Button>
-      {/* The campaign is read per request, so it streams in behind a skeleton. */}
-      <Suspense fallback={<CampaignSkeleton />}>
-        <Campaign params={params} />
-      </Suspense>
-    </div>
+    // The campaign is read per request, so it streams in behind a skeleton.
+    <Suspense fallback={<CampaignSkeleton />}>
+      <Campaign params={params} />
+    </Suspense>
   );
 }
 
@@ -34,12 +22,18 @@ async function Campaign({ params }: { params: PageProps<"/campaigns/[id]">["para
   await connection(); // always read fresh from the database, never at build time
   const { id } = await params;
   let research: Awaited<ReturnType<typeof getCampaignResearch>>;
+  let messages: Awaited<ReturnType<typeof getChat>>;
+  let headlines: Awaited<ReturnType<typeof listHeadlines>>;
   try {
-    research = await getCampaignResearch(id);
+    [research, messages, headlines] = await Promise.all([
+      getCampaignResearch(id),
+      getChat(id),
+      listHeadlines(id),
+    ]);
   } catch (error) {
     console.error("[campaigns] load failed", error);
     return (
-      <p className="text-sm text-muted-foreground">
+      <p className="p-6 text-sm text-muted-foreground md:p-10">
         This campaign couldn&apos;t be loaded right now. Refresh to try again.
       </p>
     );
@@ -47,13 +41,13 @@ async function Campaign({ params }: { params: PageProps<"/campaigns/[id]">["para
   if (!research) notFound();
 
   return (
-    <CampaignResearch
+    <CampaignWorkspace
       key={research.campaign.id}
       campaign={research.campaign}
       stale={isStale(research.campaign.status, research.campaign.researchStartedAt)}
       savedKit={research.kit}
-      savedSteps={research.steps}
-      savedNotice={research.notice}
+      savedMessages={messages}
+      savedHeadlines={headlines}
     />
   );
 }
@@ -66,11 +60,22 @@ function isStale(status: string, heartbeat: string | null): boolean {
 
 function CampaignSkeleton() {
   return (
-    <div className="flex flex-col gap-6">
-      <Skeleton className="h-14 w-72" />
-      <Skeleton className="h-4 w-40" />
-      <Skeleton className="h-16 w-full rounded-xl" />
-      <Skeleton className="h-48 w-full rounded-xl" />
+    <div className="flex flex-col md:h-[calc(100svh-4.5rem)]">
+      <div className="flex items-center gap-3 border-b px-4 py-3">
+        <Skeleton className="size-7 rounded-full" />
+        <Skeleton className="h-6 w-48" />
+      </div>
+      <div className="grid flex-1 md:grid-cols-[minmax(20rem,26rem)_1fr]">
+        <div className="flex flex-col gap-4 p-5 md:border-r">
+          <Skeleton className="ml-auto h-10 w-48 rounded-2xl" />
+          <Skeleton className="h-4 w-64" />
+          <Skeleton className="h-24 w-full rounded-xl" />
+        </div>
+        <div className="flex flex-col gap-4 bg-muted/60 p-6">
+          <Skeleton className="h-9 w-64 rounded-full bg-background" />
+          <Skeleton className="h-40 w-full rounded-xl bg-background" />
+        </div>
+      </div>
     </div>
   );
 }

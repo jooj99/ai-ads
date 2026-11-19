@@ -1,7 +1,5 @@
-import type { BrandKit, ResearchNotice, ResearchStep } from "@/lib/research/types";
-
 /**
- * Supabase Realtime broadcast channels for research progress. The server
+ * Supabase Realtime broadcast channels for research news. The server
  * (secret key) sends; browsers (publishable key) subscribe. Broadcasts never
  * touch the database tables, which stay locked behind RLS.
  *
@@ -12,26 +10,15 @@ import type { BrandKit, ResearchNotice, ResearchStep } from "@/lib/research/type
 
 /** Every campaign's headline changes, for the Campaigns list. */
 export const CAMPAIGNS_TOPIC = "campaigns";
-/** One campaign's full research progress, for its page. */
+/** One campaign's page: told when a research run finishes. */
 export const campaignTopic = (id: string) => `campaign:${id}`;
 
 export const EVENTS = {
-  /** campaignTopic: the run's current state. */
-  progress: "progress",
-  /** campaignTopic: the run ended and its result is saved. */
+  /** campaignTopic: a research run ended and its result is saved. */
   finished: "finished",
   /** CAMPAIGNS_TOPIC: a campaign's status, name, logo or current step changed. */
   changed: "changed",
 } as const;
-
-export type ProgressPayload = {
-  /** Increases with every broadcast of a run; broadcasts can arrive out of order. */
-  seq: number;
-  steps: ResearchStep[];
-  /** The kit so far, without the full catalog (that's read from the database at the end). */
-  kit: BrandKit | null;
-  notice: ResearchNotice | null;
-};
 
 export type CampaignChange = {
   id: string;

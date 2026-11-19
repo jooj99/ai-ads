@@ -1,13 +1,14 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { after } from "next/server";
+import { start } from "workflow/api";
 
 import { claimResearch, createCampaign } from "@/lib/campaigns";
 import { CAMPAIGNS_TOPIC, EVENTS, type CampaignChange } from "@/lib/realtime";
-import { runClaimedResearch } from "@/lib/research/run";
 import { supabase } from "@/lib/supabase/server";
 import { normalizeStoreUrl, ResearchInputError } from "@/lib/research/url";
+import { researchRun } from "@/workflows/agent";
+import { openResearchThread } from "@/lib/agent/research-thread";
 
 export type StartCampaignState = { error?: string; url?: string };
 
@@ -36,7 +37,12 @@ export async function startCampaign(
   try {
     const campaign = await createCampaign(url);
     id = campaign.id;
-    if (await claimResearch(id)) after(() => runClaimedResearch(id));
+    // Research is a durable agent run (workflows/agent.ts): it keeps going
+    // if the user leaves, and the page reconnects to it.
+    if (await claimResearch(id)) {
+      const run = await start(researchRun, [id]);
+      await openResearchThread(id, run.runId); // so the page can follow the run at once
+    }
     // Lets an open Campaigns list show the new campaign right away.
     const change: CampaignChange = {
       id,

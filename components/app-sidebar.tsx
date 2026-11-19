@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Suspense } from "react";
 
-import { PloyMark } from "@/components/ploy-logo";
+import { PloyAdsLogo, PloyMark } from "@/components/ploy-logo";
 import {
   Sidebar,
   SidebarContent,
@@ -78,9 +78,10 @@ export function AppSidebar() {
               tooltip="Ploy Ads"
               className="hover:bg-transparent active:bg-transparent"
             >
-              <Link href="/">
-                <PloyMark />
-                <span className="text-lg font-semibold tracking-tight">Ploy Ads</span>
+              <Link href="/" aria-label="Ploy Ads home">
+                {/* Collapsed to icons: just the "p" tile. */}
+                <PloyMark className="hidden group-data-[collapsible=icon]:flex" />
+                <PloyAdsLogo className="pl-1.5 group-data-[collapsible=icon]:hidden" />
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>

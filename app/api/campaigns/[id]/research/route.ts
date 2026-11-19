@@ -1,15 +1,14 @@
-import { after } from "next/server";
+import { start } from "workflow/api";
 
 import { claimResearch, getCampaign } from "@/lib/campaigns";
-import { runClaimedResearch } from "@/lib/research/run";
-
-// Research runs after the response (via after/waitUntil); give it room.
-export const maxDuration = 300;
+import { openResearchThread } from "@/lib/agent/research-thread";
+import { researchRun } from "@/workflows/agent";
 
 /**
- * Starts (or restarts) research for a campaign in the background and returns
- * at once. Progress reaches pages over Supabase Realtime, not this response.
- * 202 { started: true } when a run began; 409 when one is already running.
+ * Starts (or restarts) research for a campaign as a durable agent run
+ * (workflows/agent.ts) and returns at once; the page reconnects to the run's
+ * stream. 202 { started, runId } when a run began; 409 when one is already
+ * running.
  */
 export async function POST(_req: Request, ctx: RouteContext<"/api/campaigns/[id]/research">) {
   const { id } = await ctx.params;
@@ -19,6 +18,7 @@ export async function POST(_req: Request, ctx: RouteContext<"/api/campaigns/[id]
   const claimed = await claimResearch(id);
   if (!claimed) return Response.json({ started: false, reason: "already running" }, { status: 409 });
 
-  after(() => runClaimedResearch(id));
-  return Response.json({ started: true }, { status: 202 });
+  const run = await start(researchRun, [id]);
+  const thread = await openResearchThread(id, run.runId); // so the page can follow the run at once
+  return Response.json({ started: true, runId: run.runId, opening: thread.at(-1) }, { status: 202 });
 }

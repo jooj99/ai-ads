@@ -14,6 +14,8 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Git worktrees that Claude Code sessions create inside the project.
     ".claude/worktrees/**",
+    // Routes Vercel Workflow generates (and gitignores) at build/dev time.
+    "app/.well-known/workflow/**",
   ]),
 ]);
 

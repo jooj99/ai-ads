@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { AgentUIMessage } from "@/lib/agent/tools";
 import type {
   BrandColor,
   BrandFont,
@@ -9,6 +10,7 @@ import type {
   ResearchStep,
   SelectedProduct,
 } from "@/lib/research/types";
+import { deleteFontFiles } from "@/lib/research/font-store";
 import { supabase } from "@/lib/supabase/server";
 
 export type CampaignStatus = "researching" | "research_failed" | "ready";
@@ -23,6 +25,8 @@ export type Campaign = {
   updatedAt: string;
   /** When the current (or last) research run started; null before the first. */
   researchStartedAt: string | null;
+  /** The durable agent run working on the campaign right now (research or a chat turn), if any. */
+  agentRunId: string | null;
 };
 
 export type CampaignSummary = Campaign & {
@@ -51,6 +55,7 @@ type CampaignRow = {
   created_at: string;
   updated_at: string;
   research_started_at: string | null;
+  agent_run_id: string | null;
 };
 
 function toCampaign(row: CampaignRow): Campaign {
@@ -63,6 +68,7 @@ function toCampaign(row: CampaignRow): Campaign {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     researchStartedAt: row.research_started_at,
+    agentRunId: row.agent_run_id,
   };
 }
 
@@ -141,6 +147,7 @@ export async function getCampaignResearch(id: string): Promise<CampaignResearch 
           catalogSize: k.catalog_size ?? undefined,
           productTypes: k.product_types ?? [],
           productsPickedBy: k.products_picked_by ?? undefined,
+          edited: k.edited ?? [],
           products: (products.data ?? [])
             .filter((p) => p.is_hero)
             .map(
@@ -149,6 +156,8 @@ export async function getCampaignResearch(id: string): Promise<CampaignResearch 
                 title: p.title,
                 url: p.url,
                 price: p.price ?? undefined,
+                productType: p.listed_type ?? undefined,
+                tags: p.tags ?? [],
                 typeName: p.type_name ?? undefined,
                 description: p.description ?? undefined,
                 reason: p.reason ?? undefined,
@@ -162,10 +171,12 @@ export async function getCampaignResearch(id: string): Promise<CampaignResearch 
               title: p.title,
               url: p.url,
               price: p.price ?? undefined,
+              productType: p.listed_type ?? undefined,
               typeName: p.type_name ?? undefined,
               description: p.description ?? undefined,
               images: p.images ?? [],
               isHero: p.is_hero,
+              origin: p.origin ?? "research",
             }),
           ),
         }
@@ -175,7 +186,7 @@ export async function getCampaignResearch(id: string): Promise<CampaignResearch 
   };
 }
 
-function kitRow(campaignId: string, kit: BrandKit) {
+export function kitRow(campaignId: string, kit: BrandKit) {
   return {
     campaign_id: campaignId,
     name: kit.name ?? null,
@@ -207,33 +218,6 @@ export async function claimResearch(id: string): Promise<boolean> {
   return data === true;
 }
 
-/**
- * Saves a run's progress partway through (steps and the kit so far, not the
- * products), so a reload or another visitor sees where research is.
- */
-export async function saveProgress(
-  id: string,
-  { kit, steps, notice }: { kit: BrandKit | null; steps: ResearchStep[]; notice: ResearchNotice | null },
-): Promise<void> {
-  const db = supabase();
-  const now = new Date().toISOString();
-  const { error } = await db.from("brand_kits").upsert({
-    ...(kit ? kitRow(id, kit) : { campaign_id: id }),
-    research_steps: steps,
-    research_notice: notice,
-    updated_at: now,
-  });
-  if (error) throw error;
-  // Keeps the run's heartbeat fresh: claim_research treats a run that has
-  // gone quiet for 5 minutes as dead.
-  const { error: beat } = await db
-    .from("campaigns")
-    .update({ research_started_at: now, updated_at: now })
-    .eq("id", id)
-    .eq("status", "researching");
-  if (beat) throw beat;
-}
-
 export async function getCampaign(id: string): Promise<Campaign | null> {
   if (!UUID.test(id)) return null;
   const { data, error } = await supabase()
@@ -254,85 +238,12 @@ export async function setCampaignStatus(id: string, status: CampaignStatus): Pro
 }
 
 /**
- * Stores a finished research run: the brand kit, its hero products (replacing
- * the previous run's), and the campaign's status and display name.
+ * Gives the campaign the brand's name, but only while it still has its
+ * default name (the domain), so a name the user chose is never overwritten.
  */
-export async function saveResearch(
-  id: string,
-  {
-    kit,
-    steps,
-    notice,
-    status,
-  }: { kit: BrandKit | null; steps: ResearchStep[]; notice: ResearchNotice | null; status: CampaignStatus },
-): Promise<void> {
-  const db = supabase();
-  const now = new Date().toISOString();
-
-  if (kit) {
-    const { error: kitError } = await db
-      .from("brand_kits")
-      .upsert({ ...kitRow(id, kit), research_steps: steps, research_notice: notice, updated_at: now });
-    if (kitError) throw kitError;
-
-    // The whole catalog: hero picks first (with their features and reason),
-    // then every other item, each tagged with its type.
-    const heroIds = new Set(kit.products.map((p) => p.id));
-    const rows = [
-      ...kit.products.map((p) => ({
-        source_id: p.id,
-        title: p.title,
-        url: p.url,
-        price: p.price ?? null,
-        type_name: p.typeName ?? null,
-        description: p.description ?? null,
-        reason: p.reason ?? null,
-        features: p.features,
-        images: p.images,
-        is_hero: true,
-      })),
-      ...(kit.catalog ?? [])
-        .filter((p) => !heroIds.has(p.id))
-        .map((p) => ({
-          source_id: p.id,
-          title: p.title,
-          url: p.url,
-          price: p.price ?? null,
-          type_name: p.typeName ?? null,
-          description: p.description ?? null,
-          reason: null,
-          features: [],
-          images: p.images,
-          is_hero: false,
-        })),
-    ].map((row, position) => ({ ...row, campaign_id: id, position }));
-
-    const { error: clearError } = await db.from("campaign_products").delete().eq("campaign_id", id);
-    if (clearError) throw clearError;
-    for (let i = 0; i < rows.length; i += 250) {
-      const { error: productsError } = await db
-        .from("campaign_products")
-        .insert(rows.slice(i, i + 250));
-      if (productsError) throw productsError;
-    }
-  }
-
-  const { error } = await db
-    .from("campaigns")
-    .update({ status, updated_at: now })
-    .eq("id", id);
+export async function adoptBrandName(id: string, name: string, domain: string): Promise<void> {
+  const { error } = await supabase().from("campaigns").update({ name }).eq("id", id).eq("name", domain);
   if (error) throw error;
-
-  // Adopt the brand's name only while the campaign still has its default
-  // name (the domain), so a name the user chose is never overwritten.
-  if (kit?.name) {
-    const { error: nameError } = await db
-      .from("campaigns")
-      .update({ name: kit.name })
-      .eq("id", id)
-      .eq("name", kit.domain);
-    if (nameError) throw nameError;
-  }
 }
 
 export async function renameCampaign(id: string, name: string): Promise<void> {
@@ -349,17 +260,141 @@ export async function deleteCampaign(id: string): Promise<void> {
   if (!UUID.test(id)) throw new Error("Unknown campaign");
   const { error } = await supabase().from("campaigns").delete().eq("id", id);
   if (error) throw error;
+  // Storage isn't covered by the cascade; a failure here only leaves orphaned files.
+  await deleteFontFiles(id).catch((e) => console.error("[campaigns] deleting font files failed", e));
 }
 
-/** Saves user edits to the brand kit's colors and fonts. */
+/** The brand kit fields the user (in the panel) or the agent (in chat) can edit. */
+export type EditableKit = Pick<BrandKit, "tagline" | "valueProposition" | "audience" | "voice" | "colors" | "fonts">;
+
+/** The editable part of a campaign's brand kit, or null before research saved one. */
+export async function getEditableKit(id: string): Promise<EditableKit | null> {
+  if (!UUID.test(id)) return null;
+  const { data, error } = await supabase()
+    .from("brand_kits")
+    .select("tagline, value_proposition, audience, voice, colors, fonts")
+    .eq("campaign_id", id)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  return {
+    tagline: data.tagline ?? undefined,
+    valueProposition: data.value_proposition ?? undefined,
+    audience: data.audience ?? undefined,
+    voice: data.voice ?? undefined,
+    colors: data.colors ?? [],
+    fonts: data.fonts ?? [],
+  };
+}
+
+/**
+ * Saves edits to the brand kit; only the fields given change. `fields` names
+ * what the user or agent edited (see `KitField` in lib/research/state.ts);
+ * they're added to `brand_kits.edited`, so research re-runs leave them alone.
+ */
+export async function updateKit(id: string, patch: Partial<EditableKit>, fields: string[]): Promise<void> {
+  if (!UUID.test(id)) throw new Error("Unknown campaign");
+  const db = supabase();
+  const { data: current, error: readError } = await db
+    .from("brand_kits")
+    .select("edited")
+    .eq("campaign_id", id)
+    .maybeSingle();
+  if (readError) throw readError;
+  const columns: Record<string, unknown> = {
+    updated_at: new Date().toISOString(),
+    edited: [...new Set([...(current?.edited ?? []), ...fields])],
+  };
+  // A field left undefined is left alone (never cleared).
+  if (patch.tagline !== undefined) columns.tagline = patch.tagline;
+  if (patch.valueProposition !== undefined) columns.value_proposition = patch.valueProposition;
+  if (patch.audience !== undefined) columns.audience = patch.audience;
+  if (patch.voice !== undefined) columns.voice = patch.voice;
+  if (patch.colors !== undefined) columns.colors = patch.colors;
+  if (patch.fonts !== undefined) columns.fonts = patch.fonts;
+  const { error } = await db.from("brand_kits").update(columns).eq("campaign_id", id);
+  if (error) throw error;
+}
+
+/** Saves user edits from the panel: removed colors/fonts, edited audience tags. */
 export async function updateKitStyle(
   id: string,
-  style: { colors?: BrandColor[]; fonts?: BrandFont[] },
+  style: { colors?: BrandColor[]; fonts?: BrandFont[]; audience?: BrandKit["audience"] },
 ): Promise<void> {
+  const fields = [
+    style.colors && "colors",
+    style.fonts && "fonts",
+    style.audience && "audience.segments",
+  ].filter((f): f is string => Boolean(f));
+  await updateKit(id, style, fields);
+}
+
+/** The campaign's chat with the ad agent, as AI SDK UI messages. */
+export async function getChat(id: string): Promise<AgentUIMessage[]> {
+  if (!UUID.test(id)) return [];
+  const { data, error } = await supabase()
+    .from("campaign_chats")
+    .select("messages")
+    .eq("campaign_id", id)
+    .maybeSingle<{ messages: AgentUIMessage[] }>();
+  if (error) throw error;
+  return data?.messages ?? [];
+}
+
+export async function saveChat(id: string, messages: AgentUIMessage[]): Promise<void> {
   if (!UUID.test(id)) throw new Error("Unknown campaign");
   const { error } = await supabase()
-    .from("brand_kits")
-    .update({ ...style, updated_at: new Date().toISOString() })
-    .eq("campaign_id", id);
+    .from("campaign_chats")
+    .upsert({ campaign_id: id, messages, updated_at: new Date().toISOString() });
+  if (error) throw error;
+}
+
+/** A headline + CTA the user saved for the campaign's ads. */
+export type SavedHeadline = {
+  headline: string;
+  cta: string;
+  /** "agent" when picked from the agent's options, "user" when written by the user. */
+  source: "agent" | "user";
+  /** The proposeHeadlines tool call it was picked or written under, if any. */
+  proposalId: string | null;
+};
+
+/** The campaign's saved headlines, oldest first. */
+export async function listHeadlines(id: string): Promise<SavedHeadline[]> {
+  if (!UUID.test(id)) return [];
+  const { data, error } = await supabase()
+    .from("campaign_headlines")
+    .select("headline, cta, source, proposal_id")
+    .eq("campaign_id", id)
+    .order("created_at");
+  if (error) throw error;
+  return (data ?? []).map((row) => ({
+    headline: row.headline,
+    cta: row.cta,
+    source: row.source,
+    proposalId: row.proposal_id,
+  }));
+}
+
+/** Saves a headline; saving the same headline and CTA again changes nothing. */
+export async function addHeadline(id: string, h: SavedHeadline): Promise<void> {
+  if (!UUID.test(id)) throw new Error("Unknown campaign");
+  const { error } = await supabase()
+    .from("campaign_headlines")
+    .upsert(
+      { campaign_id: id, headline: h.headline, cta: h.cta, source: h.source, proposal_id: h.proposalId },
+      { onConflict: "campaign_id,headline,cta", ignoreDuplicates: true },
+    );
+  if (error) throw error;
+}
+
+export async function removeHeadline(id: string, h: { headline: string; cta: string }): Promise<void> {
+  if (!UUID.test(id)) throw new Error("Unknown campaign");
+  const { error } = await supabase()
+    .from("campaign_headlines")
+    .delete()
+    .eq("campaign_id", id)
+    .eq("headline", h.headline)
+    .eq("cta", h.cta);
   if (error) throw error;
 }

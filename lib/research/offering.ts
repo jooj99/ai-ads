@@ -26,10 +26,13 @@ export async function classifyOffering({
   domain,
   page,
   isShopify,
+  guidance,
 }: {
   domain: string;
   page: PageResearch | null;
   isShopify: boolean;
+  /** Direction from the agent or user, e.g. "they sell treatments, not retail". */
+  guidance?: string;
 }): Promise<OfferingResult> {
   const prompt = [
     `Website: ${domain}${isShopify ? " (runs on Shopify, an ecommerce platform)" : ""}`,
@@ -38,6 +41,7 @@ export async function classifyOffering({
     page?.navigation && `Navbar: ${page.navigation}`,
     page?.footer && `Footer: ${page.footer.slice(0, 1_500)}`,
     page?.content && `Homepage (start):\n${page.content.slice(0, 5_000)}`,
+    guidance?.trim() && `Direction from the marketer (follow it where the content supports it): ${guidance.trim()}`,
   ]
     .filter((line): line is string => typeof line === "string")
     .join("\n\n");
