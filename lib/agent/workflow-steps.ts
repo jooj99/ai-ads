@@ -6,6 +6,7 @@ import { AGENT_MODEL, buildInstructions, serverTools } from "@/lib/agent/server-
 import { openResearchThread } from "@/lib/agent/research-thread";
 import type { AgentUIMessage } from "@/lib/agent/tools";
 import { getCampaign, getCampaignResearch, getChat, saveChat } from "@/lib/campaigns";
+import { broadcast } from "@/lib/broadcast";
 import { CAMPAIGNS_TOPIC, campaignTopic, EVENTS, type CampaignChange } from "@/lib/realtime";
 import { supabase } from "@/lib/supabase/server";
 import { signUploads, uploadName } from "@/lib/uploads";
@@ -250,15 +251,9 @@ export async function finishResearchRun(campaignId: string, runId: string): Prom
     .eq("status", "researching");
   await db.from("campaigns").update({ agent_run_id: null }).eq("id", campaignId).eq("agent_run_id", runId);
   await broadcastChange({ id: campaignId, status, name: research?.kit?.name, logo: research?.kit?.logo });
-  await db
-    .channel(campaignTopic(campaignId))
-    .httpSend(EVENTS.finished, { status })
-    .catch((error) => console.error("[agent] finished broadcast failed", error));
+  await broadcast(campaignTopic(campaignId), EVENTS.finished, { status });
 }
 
 async function broadcastChange(change: Omit<CampaignChange, "at">) {
-  await supabase()
-    .channel(CAMPAIGNS_TOPIC)
-    .httpSend(EVENTS.changed, { ...change, at: new Date().toISOString() })
-    .catch((error) => console.error("[agent] campaigns broadcast failed", error));
+  await broadcast(CAMPAIGNS_TOPIC, EVENTS.changed, { ...change, at: new Date().toISOString() });
 }

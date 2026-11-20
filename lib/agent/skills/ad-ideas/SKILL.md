@@ -38,14 +38,15 @@ Every idea has a `style`.
 
 `visual` says what the picture is:
 - **`product`:** the product itself.
-- **`brand_graphic`:** the brand's own graphics, taken automatically from its website (its share images), never the product.
+- **`product_graphic`:** the real product with the brand visuals around it: a backdrop, frame or props made of the brand's shapes, patterns or illustrations. The product stays exact; the graphics give it the brand's look.
+- **`brand_graphic`:** the brand visuals alone (the brand's own graphics from its website), never the product.
 - **`none`:** type only.
-Scenes use `product`. Minimal ideas can use any of the three; for software and services, prefer `brand_graphic`.
+Scenes use `product` (or `product_graphic` for a stylized set). Minimal ideas can use any of them. For services, software and AI products, lean on the brand visuals: they're the strongest minimal look (`brand_graphic`). For physical goods they're optional: use them only when they suit the idea. With none in the kit, never pitch the graphic options.
 
 ## The mix
 
-- **Services and software (SaaS):** at least 2 minimal ideas, at least one of them `brand_graphic`. Use scenes only with people and outcomes, never invented screens.
-- **Physical goods:** mostly scenes, plus at least 1 minimal idea (a product hero or a bold claim).
+- **Services, software and AI (SaaS):** at least 2 minimal ideas. When the kit has brand visuals, at least 1 of them (ideally most) is `brand_graphic`; otherwise a bold claim or a real screenshot detail. Use scenes only with people and outcomes, never invented screens.
+- **Physical goods:** mostly scenes, plus at least 1 minimal idea (a product hero or a bold claim; with brand visuals if they fit).
 - **Variety:** every idea differs in format and angle. Include one safe idea and at least two bold ones.
 
 ## Each idea

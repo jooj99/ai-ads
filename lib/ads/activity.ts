@@ -1,6 +1,7 @@
 import "server-only";
 
 import { broadcastAdsChanged } from "@/lib/ads/stage";
+import { broadcast } from "@/lib/broadcast";
 import { CAMPAIGNS_TOPIC, EVENTS, type AdActivity } from "@/lib/realtime";
 import { supabase } from "@/lib/supabase/server";
 
@@ -49,9 +50,7 @@ export async function broadcastAdActivity(campaignId: string): Promise<void> {
   await broadcastAdsChanged(campaignId);
   try {
     const ads = (await adActivity([campaignId])).get(campaignId) ?? { making: 0, editing: 0, total: 0 };
-    await supabase()
-      .channel(CAMPAIGNS_TOPIC)
-      .httpSend(EVENTS.changed, { id: campaignId, ads, at: new Date().toISOString() });
+    await broadcast(CAMPAIGNS_TOPIC, EVENTS.changed, { id: campaignId, ads, at: new Date().toISOString() });
   } catch (error) {
     console.error("[ads] activity broadcast failed", error);
   }

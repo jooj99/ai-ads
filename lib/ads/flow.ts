@@ -13,7 +13,7 @@ import type { AdIssue } from "@/lib/ads/verify";
  * several minutes.
  */
 
-export const MAX_REPAIRS = 3;
+export const MAX_REPAIRS = 1;
 /** Problems fixed per round, each with its own edit (the rest wait for the next round). */
 export const MAX_EDITS_PER_ROUND = 4;
 

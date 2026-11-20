@@ -2,6 +2,7 @@ import { generateText, Output } from "ai";
 import { z } from "zod";
 
 import type { PageResearch } from "./page";
+import { GATEWAY_CACHING } from "@/lib/ai-caching";
 
 /** Small, fast model for one classification; override with OFFERING_MODEL. */
 export const OFFERING_MODEL = process.env.OFFERING_MODEL ?? "anthropic/claude-haiku-5.5";
@@ -48,6 +49,7 @@ export async function classifyOffering({
 
   const { output } = await generateText({
     model: OFFERING_MODEL,
+    providerOptions: GATEWAY_CACHING,
     instructions:
       "Classify what this business sells so an ad tool knows whether to feature products or services. When it sells both, choose what the homepage leads with.",
     prompt,

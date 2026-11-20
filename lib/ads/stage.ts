@@ -1,5 +1,6 @@
 import "server-only";
 
+import { broadcast } from "@/lib/broadcast";
 import { campaignTopic, EVENTS } from "@/lib/realtime";
 import { supabase } from "@/lib/supabase/server";
 
@@ -19,16 +20,12 @@ import { supabase } from "@/lib/supabase/server";
 export async function setAdStage(campaignId: string, adId: string, stage: string): Promise<void> {
   try {
     await supabase().from("campaign_ads").update({ stage }).eq("id", adId).eq("status", "generating");
-    await supabase().channel(campaignTopic(campaignId)).httpSend(EVENTS.adStage, { id: adId, stage });
+    await broadcast(campaignTopic(campaignId), EVENTS.adStage, { id: adId, stage });
   } catch (error) {
     console.error("[ads] stage update failed", error);
   }
 }
 
 export async function broadcastAdsChanged(campaignId: string): Promise<void> {
-  try {
-    await supabase().channel(campaignTopic(campaignId)).httpSend(EVENTS.ads, {});
-  } catch (error) {
-    console.error("[ads] ads broadcast failed", error);
-  }
+  await broadcast(campaignTopic(campaignId), EVENTS.ads, {});
 }

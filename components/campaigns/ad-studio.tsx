@@ -49,6 +49,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Textarea } from "@/components/ui/textarea";
 import { thumbnail } from "@/components/research/brand-kit-view";
 import { sameCopy } from "@/lib/agent/tools";
@@ -327,7 +328,10 @@ function AdRail({
   return (
     <ul
       aria-label="Ads"
-      className="-mx-1 flex shrink-0 gap-3 overflow-x-auto px-1 pt-1 pb-2 @lg:mx-0 @lg:w-16 @lg:flex-col @lg:overflow-x-visible @lg:overflow-y-auto @lg:p-1 @3xl:w-[5.25rem]"
+      // The scrollbar gets its own strip (right padding when it's a column,
+      // bottom padding when it's a row), so it never sits on the thumbnails:
+      // overlay scrollbars (macOS) draw inside the padding.
+      className="-mx-1 flex shrink-0 gap-3 overflow-x-auto px-1 pt-1 pb-3.5 [scrollbar-width:thin] @lg:mx-0 @lg:w-[4.75rem] @lg:flex-col @lg:overflow-x-visible @lg:overflow-y-auto @lg:py-1 @lg:pr-3.5 @lg:pl-1 @3xl:w-[6rem]"
     >
       {/* Ad 1 at the top, in number order; ads being made come last (they get the next numbers). */}
       {ads.map((a) => {
@@ -1044,10 +1048,11 @@ function AdDetails({
       )}
     >
       <div className="flex flex-col gap-2">
-        <div className="flex h-7 items-center justify-between gap-2">
-          <p className="text-xs font-semibold text-muted-foreground uppercase">
+        <div className="flex min-h-7 items-center justify-between gap-2">
+          {/* The campaign title's display face, at its header size. */}
+          <h2 className="font-display text-2xl leading-none uppercase [text-box:trim-both_cap_alphabetic]">
             Ad {number}
-          </p>
+          </h2>
           {versions.length > 1 && (
             <VersionSwitcher
               ad={ad}
@@ -1057,57 +1062,26 @@ function AdDetails({
           )}
         </div>
         <p className="text-lg leading-snug font-semibold">{ad.headline}</p>
-        {ad.idea && (
-          <div className="flex flex-col gap-0.5 text-xs leading-snug text-muted-foreground" title={ad.idea.concept}>
-            <span>
-              <span className="font-medium text-foreground">Idea: </span>
-              {ad.idea.title}
-            </span>
-            {ad.idea.concept && <span className="line-clamp-2">{ad.idea.concept}</span>}
-          </div>
-        )}
       </div>
 
       {(ad.issues?.length ?? 0) > 0 && <AdIssues issues={ad.issues} rounds={ad.fixRounds} />}
 
-      {versions.length > 1 && (
-        <div className="flex flex-col gap-2">
-          {(ad.changes?.length || ad.instruction) && (
-            <div className="flex flex-col gap-1">
-              <p className="text-xs font-medium">Changes</p>
-              <ul className="flex flex-col gap-1">
-                {(ad.changes?.length
-                  ? ad.changes
-                  : changeList(ad.instruction ?? "")
-                ).map((change, i) => (
-                  <li
-                    key={i}
-                    className="flex gap-2 text-xs leading-snug text-muted-foreground"
-                  >
-                    <span className="mt-[0.4rem] size-1 shrink-0 rounded-full bg-muted-foreground/60" />
-                    <span className="min-w-0 break-words">{change}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
+      {versions.length > 1 && (ad.changes?.length || ad.instruction) && (
+        <ChangesBox
+          key={ad.id}
+          changes={ad.changes?.length ? ad.changes : changeList(ad.instruction ?? "")}
+        />
       )}
 
       <div className="flex flex-col gap-2 rounded-xl bg-background p-3 ring-1 ring-foreground/10">
-        <p className="text-sm font-medium">
-          Comments
-          {open.length > 0 && (
-            <span className="text-muted-foreground"> · {open.length}</span>
-          )}
-        </p>
+        <p className="text-sm font-medium">Comments</p>
         {open.length ? (
           <ol className="flex flex-col gap-1.5">
             {open.map((c, i) => (
               <li
                 key={c.id}
                 className={cn(
-                  "group flex origin-left items-start gap-2 text-sm transition-[scale,opacity] duration-200 ease-in",
+                  "group flex origin-left items-start gap-2 text-xs transition-[scale,opacity] duration-200 ease-in",
                   leavingComments.includes(c.id) &&
                     "pointer-events-none scale-90 opacity-0",
                 )}
@@ -1132,7 +1106,7 @@ function AdDetails({
             ))}
           </ol>
         ) : (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             {isNewest
               ? "Click a spot on the ad to say what should change there."
               : "Comments go on the newest version."}
@@ -1375,6 +1349,42 @@ function VersionSwitcher({
 }
 
 // ---- helpers ---------------------------------------------------------------------------
+
+/**
+ * What this version's edit changed, as a dropdown in the same box as the
+ * comments: collapsed it's a single rounded row ("Changes · 3" and a
+ * chevron), open it lists each change. Starts collapsed for each version.
+ */
+function ChangesBox({ changes }: { changes: string[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Collapsible
+      open={open}
+      onOpenChange={setOpen}
+      className="rounded-xl bg-background ring-1 ring-foreground/10"
+    >
+      <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 rounded-xl p-3 text-left text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-foreground/30">
+        <span>Changes</span>
+        <ChevronDownIcon
+          className={cn(
+            "size-4 shrink-0 text-muted-foreground transition-transform duration-200",
+            open && "rotate-180",
+          )}
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <ul className="flex flex-col gap-1 px-3 pb-3">
+          {changes.map((change, i) => (
+            <li key={i} className="flex items-start gap-2 text-xs text-muted-foreground">
+              <span className="mt-[0.35rem] size-1 shrink-0 rounded-full bg-muted-foreground/60" />
+              <span className="min-w-0 flex-1 leading-snug break-words">{change}</span>
+            </li>
+          ))}
+        </ul>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
 
 /**
  * Fallback "Changes" for versions made before edits were summarized: what

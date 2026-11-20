@@ -24,7 +24,7 @@ import { setAdStage } from "@/lib/ads/stage";
 import { AD_BUCKET } from "@/lib/ads/store";
 import { supabase } from "@/lib/supabase/server";
 import { resolveReferences, type AdReference } from "@/lib/uploads";
-import { logoImage, swatchImages } from "@/lib/ads/brand-assets";
+import { logoImage, swatchImages, visualImage } from "@/lib/ads/brand-assets";
 import { getCampaignResearch } from "@/lib/campaigns";
 
 /**
@@ -270,6 +270,7 @@ Change only what is requested. Return the whole of image 1, and don't draw the p
       run_id: runId ?? null,
     }));
   } catch (error) {
+    if (error instanceof AdStoppedError) return { ok: false, summary: `Stopped editing the ad for ${label}.` };
     console.error("[ads] saving the edit row failed", error);
     return { ok: false, summary: `Couldn't edit the ad for ${label}: saving it failed.` };
   }
@@ -473,10 +474,16 @@ async function brandKitImages(campaignId: string, include?: EditInclude) {
     wanted.length ? swatchImages(campaignId, wanted) : [],
     include.productIds?.length ? chooseProducts(kit, include.productIds, false) : [],
   ]);
-  const visuals = (include.visuals ?? []).flatMap((n) => {
-    const v = kit.visuals?.[n - 1];
-    return v ? [{ url: v.url, recorded: v.url, description: v.description, n }] : [];
-  });
+  // Generated visuals live in our private bucket and are signed for the model.
+  const visuals = (
+    await Promise.all(
+      (include.visuals ?? []).map(async (n) => {
+        const v = kit.visuals?.[n - 1];
+        const image = v ? await visualImage(v) : null;
+        return v && image ? { ...image, description: v.description, n } : null;
+      }),
+    )
+  ).filter((v) => v !== null);
   return {
     logo,
     swatches,

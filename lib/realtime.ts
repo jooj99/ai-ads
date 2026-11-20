@@ -22,6 +22,8 @@ export const EVENTS = {
   ads: "ads",
   /** campaignTopic: what an ad being made is doing now, `{ id, stage }`. */
   adStage: "ad_stage",
+  /** campaignTopic: the campaign was deleted (an open page shows it's gone). */
+  deleted: "deleted",
 } as const;
 
 /** Ads in progress for a campaign: new ones being made, and edits being made. */

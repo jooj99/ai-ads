@@ -4,8 +4,8 @@ import { redirect } from "next/navigation";
 import { start } from "workflow/api";
 
 import { claimResearch, createCampaign } from "@/lib/campaigns";
+import { broadcast } from "@/lib/broadcast";
 import { CAMPAIGNS_TOPIC, EVENTS, type CampaignChange } from "@/lib/realtime";
-import { supabase } from "@/lib/supabase/server";
 import { normalizeStoreUrl, ResearchInputError } from "@/lib/research/url";
 import { requireUser } from "@/lib/supabase/auth";
 import { researchRun } from "@/workflows/agent";
@@ -52,7 +52,7 @@ export async function startCampaign(
       name: campaign.name,
       at: new Date().toISOString(),
     };
-    void supabase().channel(CAMPAIGNS_TOPIC).httpSend(EVENTS.changed, change).catch(() => {});
+    void broadcast(CAMPAIGNS_TOPIC, EVENTS.changed, change);
   } catch (error) {
     console.error("[campaigns] create failed", error);
     return { url: input, error: "Couldn't create the campaign. Try again in a moment." };

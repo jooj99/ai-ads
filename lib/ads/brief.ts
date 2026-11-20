@@ -63,6 +63,9 @@ Rules for every ad:
 const PRODUCT_RULES = {
   shown: `- The attached product photos show the brand's real products. Feature those exact products: keep their shape, colors, materials, prints and any logos on them, and every part where it is and as it attaches (a loop, strap, grip, handle or button stays in the same place and form). Never invent a product, change its design, or add products that aren't in the photos.
 - Staging is free: any setting, person, pose, angle, props, light and mood the concept calls for. The product may be held, worn, dangled, placed or used in new ways, as long as it uses only the parts it really has, as they are. Be bold and specific: a real moment, not a catalog shot, unless the concept asks for one.`,
+  product_graphic: `- The attached product photos show the brand's real products. Feature those exact products: keep their shape, colors, materials, prints and any logos on them, and every part where it is and as it attaches. Never invent a product, change its design, or add products that aren't in the photos.
+- Around the real product, use the attached brand graphics as supporting elements: lift their 3D shapes, objects, patterns or illustrations into a backdrop, a frame or props around the product, as they look in those images (you may scale, rotate, crop and arrange them). They never cover, replace or change the product, and they're never turned into a product, logo, device or interface. Never copy their text, screenshots, layout or backgrounds.
+- Staging is free otherwise: setting, angle, light and mood as the concept calls for.`,
   brand_graphic: `- This ad doesn't show the product. Its one visual element comes from the attached brand graphics (the brand's own art from its website): lift the 3D shapes, objects or illustrations out of them and place one to three of them large, clean and well lit on the background, as they look in those images (you may scale, rotate, crop and arrange them). Never copy the text, screenshots, layout or backgrounds of those images, and never turn a graphic into a logo, product, device or interface.`,
   none: `- This ad doesn't show the product or any picture: it's typographic. The headline, the logo, the button and the brand colors carry it, with at most a simple shape or color block.`,
 };
@@ -73,7 +76,17 @@ const LOGO_RULES = {
   wordmark: `- No logo image is attached: set the brand name as a small, plain wordmark in the brand font. Never invent a logo mark, and never make one out of any other image.`,
 };
 
-export type AdVisual = "product" | "brand_graphic" | "none";
+export type AdVisual = "product" | "product_graphic" | "brand_graphic" | "none";
+
+/** Whether this visual shows the real product (and needs its photos). */
+export function showsProduct(visual: AdVisual): boolean {
+  return visual === "product" || visual === "product_graphic";
+}
+
+/** Whether this visual uses the brand's graphics (kit.visuals). */
+export function usesGraphics(visual: AdVisual): boolean {
+  return visual === "brand_graphic" || visual === "product_graphic";
+}
 
 /** A minimal ad: a clean graphic layout instead of a photographed scene. */
 const MINIMAL_RULES = `
@@ -110,10 +123,17 @@ export function buildAdBrief({
   brandGraphics = [],
 }: AdBriefInput): AdBrief {
   const style = idea?.style ?? "scene";
-  // A brand-graphic ad with no brand graphics found falls back to type only.
+  // With no brand graphics to send, a brand-graphic ad falls back to type
+  // only, and a product + graphic ad to the product alone.
   const wanted = ideaVisual(idea);
-  const visual: AdVisual = wanted === "brand_graphic" && !brandGraphics.length ? "none" : wanted;
-  const showProduct = visual === "product";
+  const visual: AdVisual = brandGraphics.length
+    ? wanted
+    : wanted === "brand_graphic"
+      ? "none"
+      : wanted === "product_graphic"
+        ? "product"
+        : wanted;
+  const showProduct = showsProduct(visual);
   // Ads never show emojis, even if the saved copy has some.
   headline = withoutEmoji(headline);
   cta = withoutEmoji(cta);
@@ -139,7 +159,7 @@ export function buildAdBrief({
   // there's room (the swatch colors are also named by hex in the brief).
   const add = (url: string) => (imageUrls.length < MAX_IMAGES ? `image ${imageUrls.push(url)}` : undefined);
   const graphicImages =
-    visual === "brand_graphic"
+    usesGraphics(visual)
       ? brandGraphics.flatMap((g) => {
           const image = add(g.url);
           return image ? [{ image, description: g.description }] : [];
@@ -165,7 +185,9 @@ export function buildAdBrief({
         note:
           visual === "product"
             ? "Make this concept as directed. The products stay exactly as in their photos."
-            : visual === "brand_graphic"
+            : visual === "product_graphic"
+              ? "Make this concept as directed. The products stay exactly as in their photos; the attached brand graphics surround them as supporting elements."
+              : visual === "brand_graphic"
               ? "Make this concept as directed. The product doesn't appear: the visual is lifted from the attached brand graphics."
               : "Make this concept as directed: typographic, no product and no picture.",
       },
@@ -210,7 +232,7 @@ export function buildAdBrief({
     ...productEntries.flatMap((p) => p.photos.map((img) => `${img}: product photo of ${p.name}`)),
     ...graphicImages.map(
       (g) =>
-        `${g.image}: a brand graphic from the ${brand} website, ${g.description} (lift its shapes or objects for the ad's visual; ignore any text or layout in it)`,
+        `${g.image}: a ${brand} brand graphic, ${g.description} (lift its shapes or objects for the ad's visual; ignore any text or layout in it)`,
     ),
     ...(logoImage ? [`${logoImage}: the ${brand} logo (the real one; reproduce it exactly)`] : []),
     ...referenceEntries.map((r) => `${r.image}: a reference from the user (${r.use})`),

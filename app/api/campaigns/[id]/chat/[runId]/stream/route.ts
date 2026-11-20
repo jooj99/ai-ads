@@ -3,6 +3,7 @@ import { createUIMessageStreamResponse } from "ai";
 import { getRun } from "workflow/api";
 
 import { activeRunFor } from "../run";
+import { withRunFailure } from "@/lib/agent/run-failure";
 import { unauthorized } from "@/lib/supabase/auth";
 
 /**
@@ -29,5 +30,8 @@ export async function GET(req: Request, ctx: RouteContext<"/api/campaigns/[id]/c
   const readable = run
     .getReadable({ startIndex: 0 })
     .pipeThrough(createModelCallToUIChunkTransform({ uiStartIndex: startIndex }));
-  return createUIMessageStreamResponse({ stream: readable, headers: { "x-workflow-run-id": target } });
+  return createUIMessageStreamResponse({
+    stream: withRunFailure(target, readable),
+    headers: { "x-workflow-run-id": target },
+  });
 }

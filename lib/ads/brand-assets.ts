@@ -189,11 +189,24 @@ function isSvg(bytes: Buffer) {
  * (lib/research/visuals.ts, a vision model decides what each image is),
  * best first. Only ones that still load, at most `max`. Never throws.
  */
-export async function brandGraphics(kit: BrandKit, max = 4): Promise<BrandVisual[]> {
-  const found: BrandVisual[] = [];
+export async function brandGraphics(kit: BrandKit, max = 4): Promise<BrandGraphic[]> {
+  const found: BrandGraphic[] = [];
   for (const visual of kit.visuals ?? []) {
     if (found.length >= max) break;
-    if (await loads(visual.url).catch(() => false)) found.push(visual);
+    const image = await visualImage(visual);
+    if (image) found.push({ ...image, description: visual.description });
   }
   return found;
+}
+
+/** A brand visual ready for the image model: a URL it can fetch, and what the ad row records. */
+export type BrandGraphic = { url: string; recorded: string; description: string };
+
+/** A brand visual (an image on the brand's site) if it still loads for the image model. Never throws. */
+export async function visualImage(visual: BrandVisual): Promise<{ url: string; recorded: string } | null> {
+  try {
+    return (await loads(visual.url)) ? { url: visual.url, recorded: visual.url } : null;
+  } catch {
+    return null;
+  }
 }

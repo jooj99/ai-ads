@@ -10,6 +10,7 @@ import { describeRegion, drawMarkers } from "@/lib/ads/markers";
 import { falImage, type FalImage } from "@/lib/ads/render";
 import { AD_BUCKET } from "@/lib/ads/store";
 import { supabase } from "@/lib/supabase/server";
+import { GATEWAY_CACHING } from "@/lib/ai-caching";
 
 /**
  * Checks a freshly generated ad before anyone sees it, and repairs it when
@@ -103,6 +104,8 @@ export type VerifyInput = {
   services: boolean;
   /** False when the ad intentionally doesn't show the product (its images were only a style reference). */
   productShown?: boolean;
+  /** The brand's own graphics were sent for the ad: abstract shapes, patterns and illustrations around the product are intended. */
+  graphics?: boolean;
   /** The exact copy the ad must show, when known. */
   headline?: string;
   cta?: string;
@@ -142,7 +145,11 @@ export async function verifyAd(input: VerifyInput): Promise<{ checked: boolean; 
         } ${
           input.productShown === false
             ? "This ad intentionally doesn't show the product: the references above are only its visual style. Abstract shapes, patterns and illustrations are fine and are not products. Only report something that's presented as one of the brand's products, devices or interfaces and isn't real (fake_product / fake_screen)."
-            : "Products: everything the brand sells that appears must be one of the references, unchanged."
+            : `Products: everything the brand sells that appears must be one of the references, unchanged.${
+                input.graphics
+                  ? " The ad also uses the brand's own graphics (abstract 3D shapes, patterns or illustrations) around the product on purpose: those are not products, so don't report them unless one is made to look like a product."
+                  : ""
+              }`
         } Compare each product in the ad with its reference photos part by part: base color, print or pattern and its colors, shape and proportions, and every part: where it sits, its size and how it attaches (for example a finger loop lying flat down the middle of a case's back, not a strap hanging from its top edge), plus cutouts. Don't report how it's held, worn, dangled or used, or the setting: staging is free, as long as it only uses parts the product really has. Each difference is its own fake_product problem; a product that's right except one moved part is still wrong.${
           input.services
             ? " This brand sells a service: any screen, dashboard or interface must be one of the reference screenshots; an invented one is a problem."
@@ -156,6 +163,7 @@ export async function verifyAd(input: VerifyInput): Promise<{ checked: boolean; 
     ];
     const { output } = await generateText({
       model: VERIFY_MODEL,
+      providerOptions: GATEWAY_CACHING,
       instructions:
         "You are a strict brand-safety checker for ads made by an image model. You compare the ad with the brand's real logo and real product references and report only real problems: a logo that isn't the real one or looks pasted on, a fake or altered product, or an invented screen. Look at products closely: image models often keep a product's general look but recolor it, or move, reshape or reinvent one of its parts; those are real problems. Creative staging (a new setting, pose or way of using it) is intended, not a problem. Locate each problem precisely. Don't report style choices, and don't report something you can't see clearly.",
       messages: [{ role: "user", content }],
@@ -290,6 +298,7 @@ export async function findArtifacts(image: Uint8Array): Promise<AdIssue[]> {
     const ad = await prepare(image, 1024);
     const { output } = await generateText({
       model: VERIFY_MODEL,
+      providerOptions: GATEWAY_CACHING,
       instructions:
         "You spot leftover editing marks in finished ads: numbered circles or dots, pins, dashed or solid boxes drawn around things, arrows, labels, stray digits or watermarks that aren't part of the design. The headline, the button, the logo, text printed on products and real design elements are not marks.",
       messages: [

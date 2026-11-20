@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
 import { expireStaleAds } from "@/lib/ads/expire";
+import { broadcast } from "@/lib/broadcast";
+import { campaignTopic, EVENTS } from "@/lib/realtime";
 import { requireUser } from "@/lib/supabase/auth";
 
 import {
@@ -52,7 +54,10 @@ export async function renameCampaignAction(campaignId: string, name: string): Pr
 export async function deleteCampaignAction(campaignId: string): Promise<ActionResult> {
   await requireUser();
   if (!id.safeParse(campaignId).success) return { ok: false, error: "Unknown campaign." };
-  return run(() => deleteCampaign(campaignId), "Couldn't delete the campaign.");
+  const result = await run(() => deleteCampaign(campaignId), "Couldn't delete the campaign.");
+  // Pages still open on it (another tab) show that it's gone.
+  if (result.ok) await broadcast(campaignTopic(campaignId), EVENTS.deleted, {});
+  return result;
 }
 
 const colors = z.array(z.object({ hex: z.string().regex(/^#[0-9A-F]{6}$/i), role: z.string().max(40) })).max(12);

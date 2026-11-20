@@ -14,42 +14,31 @@ import { Button } from "@/components/ui/button";
 import type { BrandFont, BrandKit, CatalogItem, SelectedProduct } from "@/lib/research/types";
 import { cn } from "@/lib/utils";
 
-type Source = "site" | "ai";
-
 /**
- * Labels where a section's content came from: read off the site, inferred by
- * the model, or edited by the user or agent (research re-runs keep edits, so
- * an edited section no longer just reflects the site).
+ * Marks a section the user or agent edited (research re-runs keep edits, so
+ * it no longer just reflects the site). Sections show no badge otherwise.
  */
-function SourceBadge({ source, edited = false }: { source: Source; edited?: boolean }) {
-  if (edited) {
-    return (
-      <Badge
-        variant="secondary"
-        className="gap-1 font-normal"
-        title="Changed by you or the agent; research re-runs keep it"
-      >
-        <PencilIcon className="size-3" />
-        Edited
-      </Badge>
-    );
-  }
+function EditedBadge({ edited = false }: { edited?: boolean }) {
+  if (!edited) return null;
   return (
-    <Badge variant="outline" className="font-normal text-muted-foreground">
-      {source === "site" ? "From site" : "AI inferred"}
+    <Badge
+      variant="secondary"
+      className="gap-1 font-normal"
+      title="Changed by you or the agent; research re-runs keep it"
+    >
+      <PencilIcon className="size-3" />
+      Edited
     </Badge>
   );
 }
 
 function Section({
   title,
-  source,
   edited,
   className,
   children,
 }: {
   title: string;
-  source: Source;
   edited?: boolean;
   className?: string;
   children: ReactNode;
@@ -58,7 +47,7 @@ function Section({
     <Card className={cn("gap-3", className)}>
       <CardHeader className="flex flex-row items-center justify-between gap-2">
         <CardTitle>{title}</CardTitle>
-        <SourceBadge source={source} edited={edited} />
+        <EditedBadge edited={edited} />
       </CardHeader>
       <CardContent>{children}</CardContent>
     </Card>
@@ -139,7 +128,7 @@ export function BrandKitView({
 
       {/* Colors and fonts share a row. */}
       <div className="grid gap-4 @lg:grid-cols-2">
-        <Section title="Colors" source="site" edited={isEdited(kit, "colors")}>
+        <Section title="Colors" edited={isEdited(kit, "colors")}>
           {kit.colors.length ? (
             <ul className="grid grid-cols-[repeat(auto-fill,minmax(9.5rem,1fr))] gap-3">
               {kit.colors.map((color) => (
@@ -169,7 +158,7 @@ export function BrandKitView({
           )}
         </Section>
 
-        <Section title="Fonts" source="site" edited={isEdited(kit, "fonts")}>
+        <Section title="Fonts" edited={isEdited(kit, "fonts")}>
           {kit.fonts.length ? (
             <ul className="flex flex-col gap-3">
               {kit.fonts.map((font) => (
@@ -192,7 +181,7 @@ export function BrandKitView({
 
       {/* The brand's own graphics, found by research, for minimal brand-graphic ads. */}
       {(kit.visuals?.length ?? 0) > 0 && (
-        <Section title="Brand visuals" source="site" edited={isEdited(kit, "visuals")}>
+        <Section title="Brand visuals" edited={isEdited(kit, "visuals")}>
           <ul className="grid grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] gap-3">
             {kit.visuals!.map((visual) => (
               <li key={visual.url} className="flex flex-col gap-1.5">
@@ -211,7 +200,7 @@ export function BrandKitView({
 
       {/* Audience and voice share a row too. */}
       <div className="grid gap-4 @lg:grid-cols-2">
-        <Section title="Audience" source="ai" edited={isEdited(kit, "audience.segments")}>
+        <Section title="Audience" edited={isEdited(kit, "audience.segments")}>
           {kit.audience?.segments?.length || (!pending && changeAudience) ? (
             <AudienceTags segments={kit.audience?.segments ?? []} onChange={changeAudience} />
           ) : pending ? (
@@ -225,7 +214,7 @@ export function BrandKitView({
           )}
         </Section>
 
-        <Section title="Voice" source="ai" edited={isEdited(kit, "voice.summary", "voice.traits")}>
+        <Section title="Voice" edited={isEdited(kit, "voice.summary", "voice.traits")}>
           {kit.voice?.summary ? (
             <p className="text-sm">{kit.voice.summary}</p>
           ) : pending ? (
@@ -355,7 +344,7 @@ function IdentityRow({ kit, pending }: { kit: BrandKit; pending: boolean }) {
             <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
               Value proposition
             </p>
-            <SourceBadge source="ai" edited={isEdited(kit, "valueProposition")} />
+            <EditedBadge edited={isEdited(kit, "valueProposition")} />
           </div>
           {kit.valueProposition ? (
             <p className="text-sm leading-relaxed">{kit.valueProposition}</p>
@@ -545,11 +534,9 @@ const HERO = "hero";
  * advertise (its `chooseProducts` question), and the tiles become toggles.
  */
 export type ProductSelect = {
-  question: string;
   selected: string[];
   onToggle: (id: string) => void;
   onSubmit: () => void;
-  onCancel: () => void;
 };
 
 /** Whether an item matches a search: every word appears in its title, type, tags or description. */
@@ -622,47 +609,11 @@ export function ProductPicks({
   const picked = select ? catalog.filter((i) => select.selected.includes(i.id)) : [];
 
   return (
-    <Card className="gap-4">
-      {select && (
-        // The agent's question, pinned while the user picks.
-        <div className="sticky top-0 z-10 -mt-1 mx-4 flex flex-col gap-3 rounded-xl bg-foreground p-3 text-background shadow-md @lg:mx-6 @2xl:flex-row @2xl:items-center">
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium">{select.question}</p>
-            <p className="line-clamp-2 text-xs text-background/70">
-              {picked.length
-                ? picked.map((i) => i.title).join(", ")
-                : `Tap the ${noun}s to feature, then confirm. Or answer in the chat.`}
-            </p>
-          </div>
-          <div className="flex shrink-0 justify-end gap-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              className="text-background hover:bg-background/15 hover:text-background"
-              onClick={select.onCancel}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              className="bg-background text-foreground hover:bg-background/90"
-              disabled={!picked.length}
-              onClick={select.onSubmit}
-            >
-              <CheckIcon />
-              {picked.length ? `Use ${picked.length === 1 ? "this" : `these ${picked.length}`}` : `Pick ${noun}s`}
-            </Button>
-          </div>
-        </div>
-      )}
+    // overflow-visible: the Card clips by default, which would stop the selection bar from floating (sticky).
+    <Card className="gap-4 overflow-visible">
       <CardHeader className="flex flex-row items-start justify-between gap-2">
         <div className="flex flex-col gap-1">
-          <CardTitle className="flex items-center gap-2">
-            Product selection
-            {services && <Badge variant="secondary">Services</Badge>}
-          </CardTitle>
+          <CardTitle>{services ? "Service selection" : "Product selection"}</CardTitle>
           <p className="text-sm text-muted-foreground">
             {catalog.length > 0
               ? `${catalog.length} ${noun}${catalog.length === 1 ? "" : "s"} in ${kit.productTypes.length} type${
@@ -671,20 +622,14 @@ export function ProductPicks({
               : `The ${noun}s to feature in ads, grouped by type`}
           </p>
         </div>
-        {isEdited(kit, "productTypes") ? (
+        {isEdited(kit, "productTypes") && (
           <Badge
             variant="secondary"
             className="gap-1 font-normal"
             title="Grouping and heroes set by you or the agent; research re-runs keep them"
           >
             <PencilIcon className="size-3" />
-            From site · grouping edited
-          </Badge>
-        ) : (
-          <Badge variant="outline" className="font-normal text-muted-foreground">
-            {kit.productsPickedBy === "default"
-              ? "From site · grouped by listed type"
-              : "From site · grouped by AI"}
+            Grouping edited
           </Badge>
         )}
       </CardHeader>
@@ -778,6 +723,26 @@ export function ProductPicks({
           </Empty>
         )}
       </CardContent>
+      {select && (
+        // How many are picked and the confirmation, floating at the bottom
+        // of the panel so the user can scroll the catalog and still submit.
+        // The question and the other ways to answer live in the chat.
+        <div className="sticky bottom-3 z-10 mx-3 flex items-center justify-between gap-3 rounded-full bg-foreground py-2 pr-2 pl-5 text-background shadow-lg @lg:mx-5">
+          <p className="min-w-0 truncate text-sm font-medium">
+            {picked.length ? `${picked.length} selected` : `Select the ${noun}s to feature`}
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            className="shrink-0 bg-background text-foreground hover:bg-background/90"
+            disabled={!picked.length}
+            onClick={select.onSubmit}
+          >
+            <CheckIcon />
+            Confirm
+          </Button>
+        </div>
+      )}
     </Card>
   );
 }

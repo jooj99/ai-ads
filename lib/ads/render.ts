@@ -69,8 +69,27 @@ export async function startAdRow(row: AdRowInput): Promise<{ id: string; number:
     ? await db.from("campaign_ads").upsert(full, { onConflict: "tool_call_id" }).select("id, number").single()
     : await db.from("campaign_ads").insert(full).select("id, number").single();
   if (saved.error) throw saved.error;
+  // A stop that came while this ad was being prepared found no row to cancel.
+  if (row.run_id && (await runStopped(row.campaign_id, row.run_id))) {
+    await db.from("campaign_ads").delete().eq("id", saved.data.id);
+    throw new AdStoppedError();
+  }
   await broadcastAdActivity(row.campaign_id); // the Campaigns list shows "Making an ad…"
   return { id: saved.data.id as string, number: (saved.data.number as number) ?? 0 };
+}
+
+/**
+ * Whether the user stopped this agent run (the stop route records it as the
+ * campaign's `stopped_run_id`). Ads check it before they start, since a stop
+ * that comes before an ad's row exists has nothing to cancel. Never throws.
+ */
+export async function runStopped(campaignId: string, runId: string): Promise<boolean> {
+  try {
+    const { data } = await supabase().from("campaigns").select("stopped_run_id").eq("id", campaignId).maybeSingle();
+    return data?.stopped_run_id === runId;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -246,8 +265,12 @@ export async function throwIfStopped(adId: string): Promise<void> {
   if (row?.status === "failed") throw new AdExpiredError(row.error ?? "it was stopped");
   if (!row || row.status !== "generating") throw new AdStoppedError();
   if (!row.run_id) return;
-  const { data: campaign } = await db.from("campaigns").select("agent_run_id").eq("id", row.campaign_id).maybeSingle();
-  if (campaign?.agent_run_id !== row.run_id) {
+  const { data: campaign } = await db
+    .from("campaigns")
+    .select("agent_run_id, stopped_run_id")
+    .eq("id", row.campaign_id)
+    .maybeSingle();
+  if (campaign?.agent_run_id !== row.run_id || campaign?.stopped_run_id === row.run_id) {
     await db.from("campaign_ads").delete().eq("id", adId);
     throw new AdStoppedError();
   }

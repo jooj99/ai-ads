@@ -340,11 +340,12 @@ export async function findBrandVisuals({ session, progress }: StepContext): Prom
   if (!changed.includes("visuals")) {
     return { ok: true, summary: "Brand visuals were edited, so they were kept", data: { found: visuals.length } };
   }
+  // A site with none keeps none: brand visuals are only ever the brand's own.
   return {
     ok: true,
     summary: visuals.length
       ? `Found ${visuals.length} brand graphic${visuals.length === 1 ? "" : "s"}: ${visuals.map((v) => v.description).join("; ")}`
-      : `No brand graphics among ${candidates.length} images (minimal ads will be typographic or show the product)`,
+      : `No brand graphics among ${candidates.length} images (ads will show the product or be typographic)`,
     data: { found: visuals.length, checked: candidates.length },
   };
 }

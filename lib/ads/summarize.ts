@@ -3,6 +3,7 @@ import "server-only";
 import { generateText, Output } from "ai";
 import sharp from "sharp";
 import { z } from "zod";
+import { GATEWAY_CACHING } from "@/lib/ai-caching";
 
 /**
  * Describes what an edit actually changed, by looking at the ad before and
@@ -40,6 +41,7 @@ export async function summarizeEdit(input: {
     const [before, after] = await Promise.all([small(input.before), small(input.after)]);
     const { output } = await generateText({
       model: EDIT_SUMMARY_MODEL,
+      providerOptions: GATEWAY_CACHING,
       instructions:
         "You compare two versions of an image ad and list what changed. Describe only differences you can see between them; ignore tiny rendering differences. Don't restate the requests: if one wasn't done, leave it out; if something else changed, include it.",
       messages: [

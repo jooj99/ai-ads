@@ -5,13 +5,15 @@ import {
   AlertTriangleIcon,
   BookOpenIcon,
   CheckIcon,
+  KeyboardIcon,
   Loader2Icon,
   PackageSearchIcon,
   RotateCwIcon,
+  SparklesIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import {
   Conversation,
@@ -53,6 +55,10 @@ export type HeadlineControls = {
   onGenerate: (toolCallId: string, live: boolean, picked: AdIdea[]) => Promise<boolean>;
   /** Opens the Products tab in select mode for a product question. */
   onPickProducts: (toolCallId: string) => void;
+  /** Answers a product question with up to 5 hero picks. */
+  onLetPloyChoose: (toolCallId: string) => void;
+  /** Closes the picker and focuses the chat input, to name a product or paste a link. */
+  onTypeProducts: () => void;
 };
 
 /**
@@ -68,6 +74,7 @@ export function CampaignChat({
   intro,
   messages,
   ads,
+  focusRequest,
   status,
   error,
   inputDisabledReason,
@@ -82,6 +89,8 @@ export function CampaignChat({
   messages: AgentUIMessage[];
   /** The campaign's ads, so a generateAd/editAd call can show its ad's live stage. */
   ads: SavedAd[];
+  /** Bumped to put the cursor in the input (and scroll it into view). */
+  focusRequest?: number;
   status: ChatStatus;
   error?: Error;
   /** Why the input is off right now (research running or failed), if it is. */
@@ -96,6 +105,18 @@ export function CampaignChat({
   const [attachError, setAttachError] = useState<string>();
   const busy = status === "submitted" || status === "streaming";
   const last = messages.at(-1);
+
+  // "Type a product or send a link": put the cursor in the input.
+  const inputBox = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!focusRequest) return;
+    const input = inputBox.current?.querySelector("textarea");
+    input?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    input?.focus();
+  }, [focusRequest]);
+  // Waiting on "which products?": the input says it takes a name or a link too.
+  const askingProducts =
+    !busy && last?.parts.some((p) => p.type === "tool-chooseProducts" && p.state === "input-available");
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -131,7 +152,9 @@ export function CampaignChat({
                           return (
                             <p key={part.toolCallId} className="flex items-center gap-2 text-muted-foreground">
                               <CheckIcon className="size-4 shrink-0" />
-                              {part.output.titles.length ? `Chose ${part.output.titles.join(", ")}` : "Answered in the chat"}
+                              {part.output.titles.length
+                                ? `${part.output.chosenBy === "ploy" ? "Ploy chose" : "Chose"} ${part.output.titles.join(", ")}`
+                                : "Answered in the chat"}
                             </p>
                           );
                         }
@@ -144,10 +167,20 @@ export function CampaignChat({
                           >
                             <p className="text-sm font-medium">{part.input.question}</p>
                             {waiting && (
-                              <Button size="sm" onClick={() => headlines.onPickProducts(part.toolCallId)}>
-                                <PackageSearchIcon />
-                                Pick in Products
-                              </Button>
+                              <div className="flex flex-wrap gap-2">
+                                <Button size="sm" onClick={() => headlines.onPickProducts(part.toolCallId)}>
+                                  <PackageSearchIcon />
+                                  Pick in Products
+                                </Button>
+                                <Button size="sm" variant="outline" onClick={() => headlines.onLetPloyChoose(part.toolCallId)}>
+                                  <SparklesIcon />
+                                  Let Ploy choose
+                                </Button>
+                                <Button size="sm" variant="ghost" onClick={headlines.onTypeProducts}>
+                                  <KeyboardIcon />
+                                  Type a product or send a link
+                                </Button>
+                              </div>
                             )}
                           </div>
                         );
@@ -161,6 +194,7 @@ export function CampaignChat({
                             live={waiting}
                             streaming={current}
                             products={headlines.products}
+                            saved={headlines.saved}
                             onGenerate={(picked) => headlines.onGenerate(part.toolCallId, waiting, picked)}
                           />
                         );
@@ -254,7 +288,7 @@ export function CampaignChat({
         <ConversationScrollButton />
       </Conversation>
 
-      <div className="border-t p-3 md:p-4">
+      <div ref={inputBox} className="border-t p-3 md:p-4">
         {attachError && <p className="mb-2 text-sm text-destructive">{attachError}</p>}
         <PromptInput
           accept={ACCEPTED_IMAGES}
@@ -295,7 +329,14 @@ export function CampaignChat({
                 content) up to max-h-48, then scrolls. */}
             <PromptInputTextarea
               rows={1}
-              placeholder={inputDisabledReason ?? (busy ? "Type to interrupt the agent" : "Reply or steer the agent")}
+              placeholder={
+                inputDisabledReason ??
+                (busy
+                  ? "Type to interrupt the agent"
+                  : askingProducts
+                    ? "Type a product or paste a link to it"
+                    : "Reply or steer the agent")
+              }
               disabled={Boolean(inputDisabledReason)}
               onChange={(e) => setHasText(e.currentTarget.value.trim().length > 0)}
               className="min-h-0 py-2.5 pl-1"

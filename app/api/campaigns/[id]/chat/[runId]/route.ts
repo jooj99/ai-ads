@@ -1,6 +1,7 @@
 import { getRun, resumeHook } from "workflow/api";
 
 import { cancelRunAds } from "@/lib/ads/render";
+import { supabase } from "@/lib/supabase/server";
 
 import { activeRunFor } from "./run";
 import { unauthorized } from "@/lib/supabase/auth";
@@ -19,6 +20,8 @@ export async function DELETE(_req: Request, ctx: RouteContext<"/api/campaigns/[i
   const { id, runId } = await ctx.params;
   const target = await activeRunFor(id, runId);
   if (!target) return Response.json({ cancelled: false, reason: "no active run" });
+  // Ads this run is still preparing (no row yet) see this and don't start.
+  await supabase().from("campaigns").update({ stopped_run_id: target }).eq("id", id);
   const ads = await cancelRunAds(id, target).catch((error) => {
     console.error("[agent] cancelling the run's ads failed", error);
     return 0;

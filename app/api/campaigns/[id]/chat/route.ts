@@ -2,6 +2,7 @@ import { createModelCallToUIChunkTransform } from "@ai-sdk/workflow";
 import { createUIMessageStreamResponse, TypeValidationError, validateUIMessages } from "ai";
 import { start } from "workflow/api";
 
+import { withRunFailure } from "@/lib/agent/run-failure";
 import { PAUSE_TOOLS, agentToolSpecs, type AgentUIMessage } from "@/lib/agent/tools";
 import { getCampaign, getChat, saveChat } from "@/lib/campaigns";
 import { supabase } from "@/lib/supabase/server";
@@ -68,7 +69,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/campaigns/[id]/
   await db.from("campaigns").update({ agent_run_id: run.runId }).eq("id", id);
 
   return createUIMessageStreamResponse({
-    stream: run.readable.pipeThrough(createModelCallToUIChunkTransform()),
+    stream: withRunFailure(run.runId, run.readable.pipeThrough(createModelCallToUIChunkTransform())),
     headers: { "x-workflow-run-id": run.runId },
   });
 }

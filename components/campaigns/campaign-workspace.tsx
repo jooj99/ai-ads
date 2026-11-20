@@ -32,6 +32,7 @@ import { CampaignChat, type HeadlineControls } from "@/components/campaigns/camp
 import { CampaignTitle } from "@/components/campaigns/campaign-title";
 import { DeleteCampaignDialog } from "@/components/campaigns/delete-campaign-button";
 import { WriteOwnForm, type ChoiceSubmission } from "@/components/campaigns/headline-choice";
+import { CampaignGone } from "@/components/campaigns/campaign-gone";
 import { ChatStart } from "@/components/campaigns/chat-start";
 import { BrandKitView, ProductPicks } from "@/components/research/brand-kit-view";
 import { Badge } from "@/components/ui/badge";
@@ -75,18 +76,24 @@ const POLL_MS = 3_000;
  * - `ads`: an ad started, finished, failed or went away (`onAds` re-reads
  *   them), so a finished ad shows at once.
  * - `ad_stage`: what an ad being made is doing now (`onAdStage`).
+ * - `deleted`: the campaign was deleted elsewhere (`onDeleted`).
  *
  * Returns whether Realtime is on.
  */
 function useCampaignChannel(
   campaignId: string,
   running: boolean,
-  { onAds, onAdStage }: { onAds: () => void; onAdStage: (id: string, stage: string) => void },
+  {
+    onAds,
+    onAdStage,
+    onDeleted,
+  }: { onAds: () => void; onAdStage: (id: string, stage: string) => void; onDeleted: () => void },
 ): boolean {
   const router = useRouter();
   const realtime = useRef(browserSupabase());
   const ads = useEffectEvent(onAds);
   const stage = useEffectEvent(onAdStage);
+  const deleted = useEffectEvent(onDeleted);
 
   useEffect(() => {
     const client = realtime.current;
@@ -95,6 +102,7 @@ function useCampaignChannel(
       .channel(campaignTopic(campaignId))
       .on("broadcast", { event: EVENTS.finished }, () => router.refresh())
       .on("broadcast", { event: EVENTS.ads }, () => ads())
+      .on("broadcast", { event: EVENTS.deleted }, () => deleted())
       .on("broadcast", { event: EVENTS.adStage }, ({ payload }) => {
         const { id, stage: text } = (payload ?? {}) as { id?: string; stage?: string };
         if (id && text) stage(id, text);
@@ -148,7 +156,10 @@ export function CampaignWorkspace({
   const realtimeOn = useCampaignChannel(campaign.id, running, {
     onAds: () => void syncAds(),
     onAdStage: (id, stage) => setAds((list) => list.map((a) => (a.id === id && a.status === "generating" ? { ...a, stage } : a))),
+    onDeleted: () => setGone(true),
   });
+  // Deleted while open (another tab): the page says so instead of failing on every action.
+  const [gone, setGone] = useState(false);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string>();
 
@@ -227,6 +238,8 @@ export function CampaignWorkspace({
   // following (x-workflow-run-id) so an interrupt can cancel it, and
   // reconnects if the stream drops.
   const runId = useRef<string | null>(null);
+  // Card answers already sent to the agent (by tool call id): each is sent once.
+  const autoSent = useRef(new Set<string>());
   // The chat as it was before each run's reply (the messages it was sent, or
   // what was showing when we started following it). A replay restores this
   // first, so it replaces the reply instead of adding a second copy.
@@ -270,8 +283,18 @@ export function CampaignWorkspace({
     id: campaign.id,
     messages: savedMessages,
     transport,
-    // When the user continues from a choice card (a tool output), send it to the agent.
-    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+    // When the user answers a card (a tool output), send it to the agent, once.
+    // The same answer stays "complete" after the turn it started, so if that
+    // turn failed (the AI service down, say) this would resend it forever.
+    sendAutomaticallyWhen: ({ messages: all }) => {
+      if (!lastAssistantMessageIsCompleteWithToolCalls({ messages: all })) return false;
+      const last = all.at(-1);
+      const answer = last?.parts.findLast((p) => "toolCallId" in p && "state" in p && p.state === "output-available");
+      const key = answer && "toolCallId" in answer ? answer.toolCallId : last?.id;
+      if (!key || autoSent.current.has(key)) return false;
+      autoSent.current.add(key);
+      return true;
+    },
     // The agent can change headlines and the brand kit in chat; pick those
     // changes up when its reply finishes.
     onFinish: ({ message }) => {
@@ -348,15 +371,21 @@ export function CampaignWorkspace({
   /** Stops the run on the server (its reply so far is saved), then the stream here. */
   async function interrupt() {
     const run = runId.current;
-    await fetch(`${chatApi}/${run ?? campaign.id}`, { method: "DELETE" }).catch(() => undefined);
-    await stop();
-    // Stopped on purpose: don't replay it when the page is shown again.
+    // Stopped on purpose: mark it ended first, so the follow effect (which
+    // runs as soon as the status settles) doesn't re-attach to the run while
+    // it's still being cancelled, and doesn't replay it when the page is
+    // shown again.
     if (run) {
       endedRuns.current.add(run);
       runBase.current.delete(run);
-      // eslint-disable-next-line react-hooks/immutability -- a ref, changed in this handler
-      if (runId.current === run) runId.current = null;
     }
+    // The reply stops here at once; the run is cancelled on the server alongside.
+    await Promise.all([
+      fetch(`${chatApi}/${run ?? campaign.id}`, { method: "DELETE" }).catch(() => undefined),
+      stop(),
+    ]);
+    // eslint-disable-next-line react-hooks/immutability -- a ref, changed in this handler
+    if (run && runId.current === run) runId.current = null;
     // The stop cancelled any ads that run was making; drop their placeholders.
     void syncAds();
   }
@@ -616,9 +645,40 @@ export function CampaignWorkspace({
     void addToolOutput({
       tool: "chooseProducts",
       toolCallId: picking.toolCallId,
-      output: { productIds: picking.selected, titles },
+      output: { productIds: picking.selected, titles, chosenBy: "user" },
     });
     setPicking(undefined);
+  }
+
+  /**
+   * "Let Ploy choose": up to 5 of research's hero picks that have a photo,
+   * one per type in the grouping's order before a second from any type, so
+   * the ideas cover the range.
+   */
+  function letPloyChoose(toolCallId: string) {
+    const heroes = (kit?.products ?? []).filter((p) => p.images.length);
+    const order = kit?.productTypes.map((t) => t.name) ?? [];
+    const groups = new Map<string, typeof heroes>();
+    for (const p of heroes) groups.set(p.typeName ?? "", [...(groups.get(p.typeName ?? "") ?? []), p]);
+    const rank = (t: string) => (order.includes(t) ? order.indexOf(t) : order.length);
+    const lists = [...groups.entries()].sort(([a], [b]) => rank(a) - rank(b)).map(([, list]) => list);
+    const chosen: typeof heroes = [];
+    for (let i = 0; chosen.length < 5 && lists.some((l) => l[i]); i++) {
+      for (const list of lists) if (list[i] && chosen.length < 5) chosen.push(list[i]);
+    }
+    void addToolOutput({
+      tool: "chooseProducts",
+      toolCallId,
+      output: { productIds: chosen.map((p) => p.id), titles: chosen.map((p) => p.title), chosenBy: "ploy" },
+    });
+    setPicking(undefined);
+  }
+
+  /** "Type a product or send a link": closes the picker and puts the cursor in the chat. */
+  const [chatFocus, setChatFocus] = useState(0);
+  function typeProducts() {
+    setPicking(undefined);
+    setChatFocus((n) => n + 1);
   }
 
   /**
@@ -652,6 +712,8 @@ export function CampaignWorkspace({
     products: kit?.catalog ?? [],
     onGenerate: generateIdeas,
     onPickProducts: pickProducts,
+    onLetPloyChoose: letPloyChoose,
+    onTypeProducts: typeProducts,
   };
 
   /** Sending while the agent is working (a reply, or research) interrupts it first. */
@@ -668,6 +730,8 @@ export function CampaignWorkspace({
 
   const [deleteOpen, setDeleteOpen] = useState(false);
   const name = campaign.name === campaign.domain && kit?.name ? kit.name : campaign.name;
+
+  if (gone) return <CampaignGone deleted />;
 
   return (
     // The tabs' root wraps the page so their buttons can sit in the header
@@ -739,6 +803,7 @@ export function CampaignWorkspace({
           <CampaignChat
             messages={messages}
             ads={ads}
+            focusRequest={chatFocus}
             status={status}
             error={error}
             inputDisabledReason={inputDisabledReason}
@@ -802,14 +867,12 @@ export function CampaignWorkspace({
                   pending={running}
                   select={
                     picking && {
-                      question: picking.question,
                       selected: picking.selected,
                       onToggle: (id) =>
                         setPicking((p) =>
                           p && { ...p, selected: p.selected.includes(id) ? p.selected.filter((x) => x !== id) : [...p.selected, id] },
                         ),
                       onSubmit: submitProducts,
-                      onCancel: () => setPicking(undefined),
                     }
                   }
                 />

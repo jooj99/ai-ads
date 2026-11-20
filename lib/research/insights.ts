@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import type { PageResearch } from "./page";
 import { MAX_PRODUCT_TYPES, type Offering, type Product } from "./types";
+import { GATEWAY_CACHING } from "@/lib/ai-caching";
 
 /**
  * Brand-analysis model, routed through Vercel AI Gateway (needs paid Gateway
@@ -127,6 +128,7 @@ export function streamBrandInsights(input: InsightsInput) {
   const n = NOUNS[input.offering];
   return streamText({
     model: RESEARCH_MODEL,
+    providerOptions: GATEWAY_CACHING,
     instructions: `You are a brand strategist preparing a brand kit for performance ad creatives.
 This business sells ${input.offering}. Read its homepage, navbar, footer and a sample of its ${n.item} catalog, then describe the brand: its name, tagline, value proposition, audience and voice.
 Ground every claim in the provided content; when you infer (audience, voice), infer from the copy, ${n.items} and prices.`,
@@ -147,6 +149,7 @@ export function streamCatalogGrouping(input: InsightsInput) {
   const n = NOUNS[input.offering];
   return streamText({
     model: RESEARCH_MODEL,
+    providerOptions: GATEWAY_CACHING,
     instructions: `You are a brand strategist choosing what to advertise.
 This business sells ${input.offering}. Organize its whole ${n.item} catalog into kinds of ${n.item} and pick the ${n.items} to feature in ads.
 Use the navbar and footer as the brand's own category list.

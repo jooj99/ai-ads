@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { thumbnail } from "@/components/research/brand-kit-view";
 import type { AdIdea, AgentUIMessage } from "@/lib/agent/tools";
+import type { SavedHeadline } from "@/lib/campaigns";
 import type { CatalogItem } from "@/lib/research/types";
 import { withoutEmoji } from "@/lib/copy";
 import { cn } from "@/lib/utils";
@@ -29,9 +30,12 @@ export function IdeaChoice({
   live,
   streaming,
   products,
+  saved,
   onGenerate,
 }: {
   part: IdeasPart;
+  /** The saved headlines: an idea whose headline was saved from this card has been made. */
+  saved: SavedHeadline[];
   /** The agent is paused on this card, waiting for the user. */
   live: boolean;
   /** The agent is still writing this card's ideas. */
@@ -59,15 +63,22 @@ export function IdeaChoice({
   const made = new Set([
     ...(part.state === "output-available" ? part.output.picked.map((i) => i.title) : []),
     ...sentHere,
+    // Made from this card in an earlier visit (sent as a message from an older card).
+    ...ideas
+      .filter((i) => saved.some((h) => h.proposalId === part.toolCallId && h.headline === i.headline && h.cta === i.cta))
+      .map((i) => i.title),
   ]);
-  const picked = ideas.filter((i) => ticked.includes(i.title));
+  const picked = ideas.filter((i) => ticked.includes(i.title) && !made.has(i.title));
 
-  async function generate() {
+  // "Generate all": every idea on the card not made yet.
+  const rest = ideas.filter((i) => !made.has(i.title));
+
+  async function generate(which: typeof ideas) {
     setSending(true);
-    const ok = await onGenerate(picked);
+    const ok = await onGenerate(which);
     setSending(false);
     if (ok) {
-      setSentHere((s) => [...s, ...picked.map((i) => i.title)]);
+      setSentHere((s) => [...s, ...which.map((i) => i.title)]);
       setTicked([]);
     }
   }
@@ -86,27 +97,32 @@ export function IdeaChoice({
           const items = idea.productIds.flatMap((id) => products.filter((p) => p.id === id));
           return (
             <li key={idea.title}>
+              {/* A made idea can't be picked again: it already has its ad. */}
               <button
                 type="button"
                 role="checkbox"
                 aria-checked={on}
+                disabled={done}
                 onClick={() =>
                   setTicked((t) => (t.includes(idea.title) ? t.filter((x) => x !== idea.title) : [...t, idea.title]))
                 }
                 className={cn(
-                  "flex h-full w-full flex-col gap-2.5 rounded-lg border p-3 text-left transition-colors hover:border-foreground/40",
+                  "flex h-full w-full flex-col gap-2.5 rounded-lg border p-3 text-left transition-colors",
+                  done ? "cursor-default opacity-55" : "hover:border-foreground/40",
                   on ? "border-foreground bg-muted/40" : "border-border",
                 )}
               >
                 <span className="flex items-start gap-2.5">
-                  <span
-                    className={cn(
-                      "mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-[5px] border transition-colors",
-                      on ? "border-foreground bg-foreground text-background" : "border-foreground/30",
-                    )}
-                  >
-                    {on && <CheckIcon className="size-3" strokeWidth={3} />}
-                  </span>
+                  {!done && (
+                    <span
+                      className={cn(
+                        "mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-[5px] border transition-colors",
+                        on ? "border-foreground bg-foreground text-background" : "border-foreground/30",
+                      )}
+                    >
+                      {on && <CheckIcon className="size-3" strokeWidth={3} />}
+                    </span>
+                  )}
                   <span className="min-w-0 flex-1 text-sm font-semibold leading-snug">{idea.title}</span>
                   {done && (
                     <Badge variant="secondary" className="shrink-0 font-normal">
@@ -121,6 +137,11 @@ export function IdeaChoice({
                   {(idea.visual === "brand_graphic" || (!idea.visual && idea.showProduct === false)) && (
                     <Badge variant="outline" className="font-normal text-muted-foreground">
                       Brand graphic
+                    </Badge>
+                  )}
+                  {idea.visual === "product_graphic" && (
+                    <Badge variant="outline" className="font-normal text-muted-foreground">
+                      Product + brand graphic
                     </Badge>
                   )}
                   {idea.visual === "none" && (
@@ -166,10 +187,17 @@ export function IdeaChoice({
               ? `${made.size} made from here · pick more any time`
               : "Select the ideas you like, then generate."}
         </p>
-        <Button size="sm" disabled={!picked.length || sending} onClick={() => void generate()}>
-          {sending ? <Loader2Icon className="animate-spin" /> : <SparklesIcon />}
-          {picked.length > 1 ? `Generate ${picked.length} ads` : "Generate ad"}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          {rest.length > 1 && (
+            <Button size="sm" variant="outline" disabled={sending} onClick={() => void generate(rest)}>
+              Generate all {rest.length}
+            </Button>
+          )}
+          <Button size="sm" disabled={!picked.length || sending} onClick={() => void generate(picked)}>
+            {sending ? <Loader2Icon className="animate-spin" /> : <SparklesIcon />}
+            {picked.length > 1 ? `Generate ${picked.length} selected` : "Generate selected"}
+          </Button>
+        </div>
       </div>
     </div>
   );

@@ -3,6 +3,7 @@ import { convertToModelMessages, isStepCount, type Tool } from "ai";
 import { createHook, getWorkflowMetadata, getWritable } from "workflow";
 
 import { runAdFlow } from "@/lib/ads/flow";
+import { GATEWAY_CACHING } from "@/lib/ai-caching";
 import type { GenerateAdInput } from "@/lib/ads/generate";
 import { PAUSE_TOOLS, agentToolSpecs, researchToolSpecs, type AgentUIMessage } from "@/lib/agent/tools";
 import {
@@ -110,6 +111,9 @@ async function runAgent(
     }),
     writable: getWritable<ModelCallStreamPart>(),
     abortSignal: controller.signal,
+    // Tool definitions, instructions and the thread so far repeat on every
+    // step of a turn: the Gateway caches them (lib/ai-caching.ts).
+    providerOptions: GATEWAY_CACHING,
     stopWhen: isStepCount(mode === "research" ? 40 : 12),
     prepareStep: ({ steps }) => {
       // A chat turn has per-turn budgets for research and ads; a research run is bounded

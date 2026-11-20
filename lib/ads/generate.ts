@@ -4,7 +4,7 @@ import sharp from "sharp";
 
 import { broadcastAdActivity } from "@/lib/ads/activity";
 import { brandGraphics, logoImage, swatchImages } from "@/lib/ads/brand-assets";
-import { buildAdBrief, ideaVisual, withoutEmoji } from "@/lib/ads/brief";
+import { buildAdBrief, ideaVisual, showsProduct, usesGraphics, withoutEmoji } from "@/lib/ads/brief";
 import { MAX_REPAIRS, runAdFlow, type AdCheck, type AdVerification } from "@/lib/ads/flow";
 import {
   AdExpiredError,
@@ -15,6 +15,7 @@ import {
   falImage,
   finishedByToolCall,
   replaceFailedAd,
+  runStopped,
   startAdRow,
   storeAdImage,
   throwIfStopped,
@@ -39,7 +40,7 @@ import type { IdeaDirection } from "@/lib/agent/tools";
  *    renders a draft;
  * 2. `checkDraft`: a vision model checks the draft against the real products
  *    and logo (lib/ads/verify.ts);
- * 3. `repairDraft`: one boxed edit per problem, chained, up to three rounds
+ * 3. `repairDraft`: one boxed edit per problem, chained, in up to MAX_REPAIRS rounds (one)
  *    while problems remain;
  * 4. `finishAd`: stores the best version. Problems still there are saved
  *    and shown beside the ad.
@@ -81,6 +82,8 @@ export type AdJob = {
   services: boolean;
   /** Whether the idea shows the product (minimal ideas may not). */
   showProduct: boolean;
+  /** The brand visuals were sent (abstract graphics in the ad are intended). */
+  graphics?: boolean;
   /** The kit's logo URL, when it has one: the check compares the ad's logo with it. */
   logo?: string;
 };
@@ -145,7 +148,7 @@ export async function startAd(
   const visual = ideaVisual(input.idea);
   const all = [...(kit.catalog ?? []), ...kit.products];
   const products =
-    visual === "product"
+    showsProduct(visual)
       ? await chooseProducts(kit, input.productIds ?? [])
       : (input.productIds ?? []).flatMap((id) => all.filter((p) => p.id === id).slice(0, 1));
   if (!products.length) return fail("none of the chosen products has a photo that loads.");
@@ -157,7 +160,7 @@ export async function startAd(
   const [logo, swatches, graphics] = await Promise.all([
     logoImage(campaignId, kit.logo),
     swatchImages(campaignId, kit.colors),
-    visual === "brand_graphic" ? brandGraphics(kit) : Promise.resolve([]),
+    usesGraphics(visual) ? brandGraphics(kit) : Promise.resolve([]),
   ]);
   const brief = buildAdBrief({
     kit,
@@ -171,12 +174,14 @@ export async function startAd(
     brandGraphics: graphics,
   });
   // The row records our own images by storage path, never as signed URLs.
-  const ours = [...refs.found, ...swatches, ...(logo ? [logo] : [])];
+  const ours = [...refs.found, ...swatches, ...graphics, ...(logo ? [logo] : [])];
   const recorded = brief.imageUrls.map((u) => ours.find((r) => r.url === u)?.recorded ?? u);
 
   let adId: string;
   let number: number;
   try {
+    // Stopped while this was being prepared: don't start (and keep a failed ad being retried).
+    if (runId && (await runStopped(campaignId, runId))) throw new AdStoppedError();
     // Retrying an ad that failed: it's replaced, and this one takes its number.
     const retryOf = await replaceFailedAd(campaignId, input.headline, input.cta, copy.retryOf);
     ({ id: adId, number } = await startAdRow({
@@ -193,6 +198,9 @@ export async function startAd(
       idea: input.idea ?? null,
     }));
   } catch (error) {
+    if (error instanceof AdStoppedError) {
+      return { result: { ok: false, summary: `Stopped making the ad for ${label(input.headline)}.` } };
+    }
     console.error("[ads] saving the ad row failed", error);
     return fail("saving it failed.");
   }
@@ -209,7 +217,8 @@ export async function startAd(
     // shown only in a second photo isn't mistaken for a fake.
     productUrls: products.flatMap((p) => p.images.slice(0, 2)).slice(0, 6),
     services: kit.offering === "services",
-    showProduct: visual === "product",
+    showProduct: showsProduct(visual),
+    graphics: usesGraphics(visual) && graphics.length > 0,
     ...(logo && { logo: kit.logo }),
   };
   try {
@@ -243,6 +252,7 @@ export async function checkDraft(job: AdJob, path: string): Promise<AdCheck> {
     productUrls: job.productUrls,
     services: job.services,
     productShown: job.showProduct !== false,
+    graphics: job.graphics,
     headline: job.headline,
     cta: job.cta,
   });
@@ -261,7 +271,11 @@ export async function repairDraft(
     const image = await readWork(path);
     if (!image) return {};
     console.warn(`[ads] Ad ${job.number}: repair ${round}.${edit} for ${issue.kind} at ${issue.where}`);
-    await setAdStage(job.campaignId, job.adId, `Fixing ${repairTarget(issue)} (round ${round} of ${MAX_REPAIRS})`);
+    await setAdStage(
+      job.campaignId,
+      job.adId,
+      `Fixing ${repairTarget(issue)}${MAX_REPAIRS > 1 ? ` (round ${round} of ${MAX_REPAIRS})` : ""}`,
+    );
     const logo = issue.kind === "logo" && job.logo ? await logoImage(job.campaignId, job.logo) : null;
     const repaired = await fixAd({
       campaignId: job.campaignId,

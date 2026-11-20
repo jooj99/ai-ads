@@ -7,6 +7,7 @@ import { z } from "zod";
 import { fetchHtml, imagesFromHtml } from "./html-signals";
 import type { BrandVisual, CatalogItem } from "./types";
 import { absoluteUrl, isPublicHttpUrl } from "./url";
+import { GATEWAY_CACHING } from "@/lib/ai-caching";
 
 /**
  * The brand's own graphics: 3D shapes, a mascot, illustrations, patterns,
@@ -152,6 +153,7 @@ export async function classifyVisuals(brand: string, candidates: VisualCandidate
   try {
     const { output } = await generateText({
       model: VISUALS_MODEL,
+      providerOptions: GATEWAY_CACHING,
       instructions: `You sort images from ${brand}'s website for an ad team. Decide what each one is, using the picture and its context (where it was found, its file name). Be strict about brand graphics: only ${brand}'s own art (3D shapes, a mascot, illustrations, patterns), never another company's logo, a product photo, a person or a screenshot. Product and feature pages often show customers' and partners' logos ("trusted by", testimonials): a mark named after another company, or one that looks like a standalone logo, is other_company_logo even when it's stylized or 3D.`,
       messages: [
         {
@@ -185,3 +187,4 @@ function ogImage(html: string): string | undefined {
   const tag = html.match(/<meta[^>]+(?:property|name)=["']og:image["'][^>]*>/i)?.[0];
   return tag?.match(/content=["']([^"']+)["']/i)?.[1];
 }
+

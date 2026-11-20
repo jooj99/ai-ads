@@ -83,10 +83,10 @@ export const adIdea = z.object({
       'Required. "scene": a photographic moment (a setting, people, the product in use). "minimal": a clean graphic ad on a plain or soft brand-color background with a big headline, the logo, lots of space and at most one graphic element; the product may or may not appear.',
     ),
   visual: z
-    .enum(["product", "brand_graphic", "none"])
+    .enum(["product", "product_graphic", "brand_graphic", "none"])
     .optional()
     .describe(
-      'Required. The ad\'s visual: "product" shows the product itself; "brand_graphic" uses the brand\'s own graphics from its website (3D shapes, mascot-like objects, illustrations) as the one visual element, without the product; "none" is type only. For software and services, "brand_graphic" is usually the strongest minimal choice.',
+      'Required. The ad\'s visual: "product" shows the product itself; "product_graphic" shows the real product with the brand visuals around it (a backdrop, frame or props of the brand\'s shapes, patterns or illustrations); "brand_graphic" uses the brand visuals as the one visual element, without the product; "none" is type only. The two graphic options need brand visuals in the kit. For services, software and AI, "brand_graphic" is the preferred minimal look; for physical goods the graphic options are optional.',
     ),
   showProduct: z.boolean().optional().describe("Older ideas only; use visual."),
   pitch: z
@@ -125,13 +125,17 @@ export type IdeaDirection = z.infer<typeof ideaDirection>;
 
 export const chooseProductsSpec = tool({
   description:
-    "Ask the user which products (or services) to make ads about. The page opens the Products tab, where they tick some and confirm. Write your question in text too. They may answer in chat instead; then the result is empty and you match what they wrote.",
+    "Ask the user which products (or services) to make ads about. The page opens the Products tab, where they tick some and confirm, or press \"Let Ploy choose\" (up to 5 hero picks, chosenBy \"ploy\"). Write your question in text too. They may answer in chat instead (typing a product or pasting a link); then the result is empty and you match what they wrote.",
   inputSchema: z.object({
     question: z.string().describe('A short question for the selection bar, e.g. "Which cases should these ads feature?"'),
   }),
   outputSchema: z.object({
     productIds: z.array(z.string()).describe("Catalog ids the user selected. Empty when they answered in chat."),
     titles: z.array(z.string()).describe("Their names, in the same order."),
+    chosenBy: z
+      .enum(["user", "ploy"])
+      .optional()
+      .describe('"ploy" when the user let you choose: the products are up to 5 hero picks across types.'),
   }),
 });
 
@@ -406,7 +410,7 @@ export const researchToolSpecs = {
   }),
   findBrandVisuals: tool({
     description:
-      "Find the brand's own graphics on its site (3D shapes, a mascot, illustrations, patterns; never customer logos, people or products) and save them to the kit as brand visuals, for minimal ads with a brand graphic. Needs the homepage read.",
+      "Find the brand's own graphics on its site (3D shapes, a mascot, illustrations, patterns; never customer logos, people or products) and save them to the kit as brand visuals. Nothing is generated: a site without any keeps none. For brand-graphic and product + brand-graphic ads. Needs the homepage read.",
     inputSchema: z.object({}),
     outputSchema: researchResult,
   }),
