@@ -10,6 +10,9 @@ import { CAMPAIGNS_TOPIC, campaignTopic, EVENTS, type CampaignChange } from "@/l
 import { supabase } from "@/lib/supabase/server";
 import { signUploads, uploadName } from "@/lib/uploads";
 import { logoImage } from "@/lib/ads/brand-assets";
+import type { AdVerification } from "@/lib/ads/flow";
+import { checkDraft, finishAd, repairDraft, startAd, type AdJob, type GenerateAdInput } from "@/lib/ads/generate";
+import type { AdIssue } from "@/lib/ads/verify";
 
 /**
  * The durable agent's steps (see workflows/agent.ts). Each function marked
@@ -17,6 +20,31 @@ import { logoImage } from "@/lib/ads/brand-assets";
  * safe to run again: they read and upsert by id. Their arguments and results
  * are plain JSON.
  */
+
+// --- a new ad, one phase per step (the loop is lib/ads/flow.ts) ----------------
+// Each phase, and each repair edit, fits one step's time limit; split up, a
+// draft plus three repair rounds can take minutes, and a crash resumes where
+// it was.
+
+export async function adStart(campaignId: string, runId: string, input: GenerateAdInput, toolCallId: string) {
+  "use step";
+  return startAd(campaignId, input, { toolCallId, runId });
+}
+
+export async function adCheck(job: AdJob, path: string) {
+  "use step";
+  return checkDraft(job, path);
+}
+
+export async function adRepair(job: AdJob, path: string, issue: AdIssue, round: number, edit: number) {
+  "use step";
+  return repairDraft(job, path, issue, round, edit);
+}
+
+export async function adFinish(job: AdJob, path: string, verification: AdVerification) {
+  "use step";
+  return finishAd(job, path, verification);
+}
 
 /** Live labels for the Campaigns grid while a research run calls each tool. */
 const STEP_LABELS: Record<string, string> = {

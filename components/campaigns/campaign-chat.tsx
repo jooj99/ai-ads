@@ -149,7 +149,14 @@ export function CampaignChat({
                         ) : null;
                       case "tool-generateAd":
                       case "tool-editAd":
-                        return <AdRow key={part.toolCallId} part={part} live={current} />;
+                        return (
+                          <AdRow
+                            key={part.toolCallId}
+                            part={part}
+                            live={current}
+                            retry={isRetry(message.parts.slice(0, i), part)}
+                          />
+                        );
                       case "tool-readSkill":
                         return part.state === "output-available" ? (
                           <p key={part.toolCallId} className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -369,7 +376,20 @@ type AdPart = Extract<AgentUIMessage["parts"][number], { type: "tool-generateAd"
  * a minute), then a small thumbnail with the summary, or why it failed. The
  * Ads tab holds the full-size ads.
  */
-function AdRow({ part, live }: { part: AdPart; live: boolean }) {
+/** Whether an earlier call in the message tried the same ad (same headline, or same ad edited) and failed. */
+function isRetry(before: AgentUIMessage["parts"], part: AdPart): boolean {
+  const target = (p: AdPart) => (p.type === "tool-generateAd" ? p.input?.headline : p.input?.adId);
+  return before.some(
+    (p) =>
+      p.type === part.type &&
+      p.state === "output-available" &&
+      !p.output.ok &&
+      target(p as AdPart) !== undefined &&
+      target(p as AdPart) === target(part),
+  );
+}
+
+function AdRow({ part, live, retry }: { part: AdPart; live: boolean; retry: boolean }) {
   if (part.state === "output-available") {
     const { ok, summary, ad } = part.output;
     return (
@@ -392,11 +412,14 @@ function AdRow({ part, live }: { part: AdPart; live: boolean }) {
   }
   if (!live || part.state === "output-error") return null; // interrupted before it finished
   const headline = part.type === "tool-generateAd" ? part.input?.headline : undefined;
+  // A second try after a failure says so, so it doesn't look like a duplicate.
   const text =
     part.type === "tool-editAd"
-      ? "Making a new version of the ad…"
+      ? retry
+        ? "Trying the new version again…"
+        : "Making a new version of the ad…"
       : headline
-        ? `Making the ad for “${headline}”…`
+        ? `${retry ? "Trying again: the ad" : "Making the ad"} for “${headline}”…`
         : "Making an ad…";
   return (
     <p className="flex items-center gap-2 text-muted-foreground">

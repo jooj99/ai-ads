@@ -2,8 +2,14 @@ import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
 import { convertToModelMessages, isStepCount, type Tool } from "ai";
 import { createHook, getWorkflowMetadata, getWritable } from "workflow";
 
+import { runAdFlow } from "@/lib/ads/flow";
+import type { GenerateAdInput } from "@/lib/ads/generate";
 import { agentToolSpecs, researchToolSpecs, type AgentUIMessage } from "@/lib/agent/tools";
 import {
+  adCheck,
+  adFinish,
+  adRepair,
+  adStart,
   beginResearchRun,
   executeServerTool,
   finishResearchRun,
@@ -66,17 +72,29 @@ async function runAgent(
   const controller = new AbortController();
   void cancelHook.then(() => controller.abort());
 
-  // Every tool but the choice card runs on the server, as its own step.
+  // Every tool but the choice card runs on the server, as its own step; a
+  // new ad runs as several (draft, check, up to three repairs, finish).
   const tools: Record<string, Tool> = {};
   for (const [name, spec] of Object.entries(agentToolSpecs)) {
     tools[name] =
       name === "proposeHeadlines"
         ? spec
-        : {
-            ...spec,
-            execute: (input: unknown, { toolCallId }: { toolCallId: string }) =>
-              executeServerTool(name, campaignId, runId, input, toolCallId),
-          };
+        : name === "generateAd"
+          ? {
+              ...spec,
+              execute: (input: unknown, { toolCallId }: { toolCallId: string }) =>
+                runAdFlow({
+                  start: () => adStart(campaignId, runId, input as GenerateAdInput, toolCallId),
+                  check: adCheck,
+                  repair: adRepair,
+                  finish: adFinish,
+                }),
+            }
+          : {
+              ...spec,
+              execute: (input: unknown, { toolCallId }: { toolCallId: string }) =>
+                executeServerTool(name, campaignId, runId, input, toolCallId),
+            };
   }
   const costly = Object.keys(researchToolSpecs).filter((n) => !FREE_RESEARCH_TOOLS.has(n));
 

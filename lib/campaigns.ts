@@ -448,6 +448,12 @@ export type SavedAd = {
   height: number | null;
   error: string | null;
   createdAt: string;
+  /** The agent tool call that made it, so the studio can tell a running call's ad from the call's placeholder. */
+  toolCallId: string | null;
+  /** Problems the check still found after its repair rounds (shown beside the ad); empty when it passed or wasn't checked. */
+  issues: string[];
+  /** Repair rounds the check ran on it (0–3). */
+  fixRounds: number;
 };
 
 /** The campaign's ads, newest first. */
@@ -456,7 +462,7 @@ export async function listAds(id: string): Promise<SavedAd[]> {
   const { data, error } = await supabase()
     .from("campaign_ads")
     .select(
-      "id, number, parent_id, instruction, retained, changes, headline, cta, product_ids, status, image_path, width, height, error, created_at, ad_comments!ad_comments_ad_id_fkey(id, x, y, body, status, applied_ad_id, created_at), applied:ad_comments!ad_comments_applied_ad_id_fkey(id, x, y, body, status, applied_ad_id, created_at)",
+      "id, number, parent_id, instruction, retained, changes, headline, cta, product_ids, status, image_path, width, height, error, created_at, tool_call_id, verification, ad_comments!ad_comments_ad_id_fkey(id, x, y, body, status, applied_ad_id, created_at), applied:ad_comments!ad_comments_applied_ad_id_fkey(id, x, y, body, status, applied_ad_id, created_at)",
     )
     .eq("campaign_id", id)
     .order("created_at", { ascending: false });
@@ -479,6 +485,11 @@ export async function listAds(id: string): Promise<SavedAd[]> {
     height: row.height,
     error: row.error,
     createdAt: row.created_at,
+    toolCallId: row.tool_call_id ?? null,
+    issues: ((row.verification as { remaining?: { problem?: string }[] } | null)?.remaining ?? []).flatMap((i) =>
+      i.problem ? [i.problem] : [],
+    ),
+    fixRounds: (row.verification as { rounds?: number } | null)?.rounds ?? 0,
   }));
 }
 

@@ -50,8 +50,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
+import { thumbnail } from "@/components/research/brand-kit-view";
 import { sameCopy } from "@/lib/agent/tools";
 import type { AdComment, SavedAd } from "@/lib/campaigns";
+import type { CatalogItem } from "@/lib/research/types";
 import { cn } from "@/lib/utils";
 
 /** A new ad the agent is making right now (its generateAd call hasn't returned). */
@@ -80,6 +82,7 @@ export function AdStudio({
   pending,
   editing,
   brand,
+  products,
   onDelete,
   onAddComment,
   onDeleteComment,
@@ -92,6 +95,8 @@ export function AdStudio({
   /** Ad versions the agent is editing right now (editAd calls in flight). */
   editing: string[];
   brand: string;
+  /** The campaign's catalog, to show the products each ad was made with. */
+  products: CatalogItem[];
   onDelete: (ad: SavedAd, scope: "version" | "ad") => void;
   onAddComment: (
     ad: SavedAd,
@@ -126,9 +131,16 @@ export function AdStudio({
         headline: a.versions[0].headline,
         cta: a.versions[0].cta,
       })),
-    ...pending.filter((p) => !ads.some((a) => live(a) && sameCopy(a, p))),
+    // A call whose ad already exists (being made, or finished while the tool
+    // call is still wrapping up) has no placeholder of its own.
+    ...pending.filter((p) => !ads.some((a) => a.toolCallId === p.key || (live(a) && sameCopy(a, p)))),
   ];
-  const shown = all.filter((a) => !a.versions.every(live));
+  // A failed ad being retried (a call for the same copy is running) leaves
+  // the rail now: the retry takes its place and its number.
+  const retrying = (a: Ad) =>
+    a.versions.every((v) => v.status === "failed") &&
+    pending.some((p) => p.key !== a.versions[0].toolCallId && sameCopy(a.versions[0], p));
+  const shown = all.filter((a) => !a.versions.every(live) && !retrying(a));
 
   // Selection: an ad by number, and optionally an older version. A pick of an
   // older version lapses when the ad gains a version (show the new one).
@@ -244,6 +256,7 @@ export function AdStudio({
             isNewest={version.id === newest?.id}
             editing={inEdit}
             brand={brand}
+            products={products}
             onPickVersion={(id) =>
               setPick({
                 number: ad.number,
@@ -364,6 +377,14 @@ function AdRail({
                 {open > 0 && (
                   <span className="absolute top-1 left-1 flex size-4 items-center justify-center rounded-full bg-[#FF2D55] text-[10px] font-bold text-white">
                     {open}
+                  </span>
+                )}
+                {top.issues.length > 0 && top.imageUrl && (
+                  <span
+                    title="Still not right after the automatic fixes"
+                    className="absolute bottom-1 left-1 flex size-4 items-center justify-center rounded-full bg-brand-orange text-white shadow-sm"
+                  >
+                    <AlertTriangleIcon className="size-2.5" />
                   </span>
                 )}
               </span>
@@ -972,6 +993,7 @@ function AdDetails({
   isNewest,
   editing,
   brand,
+  products,
   onPickVersion,
   onDeleteComment,
   onApply,
@@ -984,6 +1006,7 @@ function AdDetails({
   isNewest: boolean;
   editing: boolean;
   brand: string;
+  products: CatalogItem[];
   onPickVersion: (id: string) => void;
   onDeleteComment: (c: AdComment) => void;
   onApply: (count: number) => void;
@@ -1019,6 +1042,8 @@ function AdDetails({
         </div>
         <p className="text-lg leading-snug font-semibold">{ad.headline}</p>
       </div>
+
+      {ad.issues.length > 0 && <AdIssues issues={ad.issues} rounds={ad.fixRounds} />}
 
       {versions.length > 1 && (
         <div className="flex flex-col gap-2">
@@ -1130,7 +1155,93 @@ function AdDetails({
           </Button>
         </div>
       )}
+
+      <AdProducts ids={ad.productIds} products={products} />
     </div>
+  );
+}
+
+/**
+ * What the automatic check still found wrong with this version after its
+ * repair rounds, so it's never mistaken for a clean ad.
+ */
+function AdIssues({ issues, rounds }: { issues: string[]; rounds: number }) {
+  return (
+    <div className="flex flex-col gap-1.5 rounded-lg bg-brand-orange/10 p-3 ring-1 ring-brand-orange/30">
+      <p className="flex items-center gap-1.5 text-sm font-medium">
+        <AlertTriangleIcon className="size-4 shrink-0 text-brand-orange" />
+        {rounds ? `Still not right after ${rounds} ${rounds === 1 ? "fix" : "fixes"}` : "Not quite right"}
+      </p>
+      <ul className="flex list-disc flex-col gap-1 pl-5 text-xs text-muted-foreground">
+        {issues.map((issue) => (
+          <li key={issue}>{issue}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * The products the ad was made with (its version's `product_ids`, matched
+ * to the catalog): a photo, the name and price, each linking to its page.
+ */
+function AdProducts({ ids, products }: { ids: string[]; products: CatalogItem[] }) {
+  if (!ids.length) return null;
+  const items = ids.map((id) => ({ id, item: products.find((p) => p.id === id) }));
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-sm font-medium">
+        {items.length === 1 ? "Product in this ad" : "Products in this ad"}
+      </p>
+      <ul className="flex flex-col gap-2">
+        {items.map(({ id, item }) => (
+          <li key={id}>
+            {item ? (
+              <a
+                href={item.url}
+                target="_blank"
+                rel="noreferrer"
+                className="group flex items-center gap-3 rounded-lg p-1 -m-1 transition-colors hover:bg-muted"
+              >
+                <ProductThumb item={item} />
+                <span className="min-w-0 flex-1">
+                  <span className="line-clamp-2 text-sm leading-snug group-hover:underline">{item.title}</span>
+                  {(item.price || item.typeName) && (
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {[item.price, item.typeName].filter(Boolean).join(" · ")}
+                    </span>
+                  )}
+                </span>
+              </a>
+            ) : (
+              <span className="flex items-center gap-3 text-sm text-muted-foreground">
+                <span className="size-12 shrink-0 rounded-md bg-muted" />
+                No longer in the catalog
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ProductThumb({ item }: { item: CatalogItem }) {
+  const [broken, setBroken] = useState(false);
+  const image = item.images[0];
+  return image && !broken ? (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={thumbnail(image, 160)}
+      alt=""
+      loading="lazy"
+      onError={() => setBroken(true)}
+      className="size-12 shrink-0 rounded-md bg-muted object-cover ring-1 ring-foreground/10"
+    />
+  ) : (
+    <span className="flex size-12 shrink-0 items-center justify-center rounded-md bg-muted font-display text-lg uppercase ring-1 ring-foreground/10">
+      {item.title.slice(0, 1)}
+    </span>
   );
 }
 

@@ -85,7 +85,7 @@ function Empty({ children }: { children: ReactNode }) {
 }
 
 /** Shopify's CDN resizes on the fly; ask for thumbnails instead of originals. */
-function thumbnail(src: string, width: number) {
+export function thumbnail(src: string, width: number) {
   try {
     const url = new URL(src);
     if (url.hostname === "cdn.shopify.com" || url.pathname.includes("/cdn/shop/")) {

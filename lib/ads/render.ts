@@ -37,6 +37,8 @@ export type AdRowInput = {
   tool_call_id: string | null;
   /** The agent run making it; stopping that run cancels it (see cancelRunAds). */
   run_id?: string | null;
+  /** Set when it retries a failed ad, to take that ad's number; else the next one. */
+  number?: number;
 };
 
 /** Thrown when the run making an ad was stopped: its result is thrown away. */
@@ -60,6 +62,39 @@ export async function startAdRow(row: AdRowInput): Promise<{ id: string; number:
   if (saved.error) throw saved.error;
   await broadcastAdActivity(row.campaign_id); // the Campaigns list shows "Making an ad…"
   return { id: saved.data.id as string, number: (saved.data.number as number) ?? 0 };
+}
+
+/**
+ * A retry of an ad that failed (same headline and CTA, never made): deletes
+ * the failed one and returns its number, so the retry takes its place
+ * ("Ad 2" again) instead of leaving a broken ad in the list. Undefined when
+ * there's nothing to replace. Never throws.
+ */
+export async function replaceFailedAd(campaignId: string, headline: string, cta: string): Promise<number | undefined> {
+  try {
+    const db = supabase();
+    const { data } = await db
+      .from("campaign_ads")
+      .select("id, number")
+      .eq("campaign_id", campaignId)
+      .eq("headline", headline)
+      .eq("cta", cta)
+      .eq("status", "failed")
+      .is("parent_id", null)
+      .order("created_at", { ascending: false });
+    if (!data?.length) return undefined;
+    // Only ads with no other versions (a failed ad never got any).
+    const ids = data.map((r) => r.id as string);
+    const { data: children } = await db.from("campaign_ads").select("parent_id").in("parent_id", ids);
+    const parents = new Set((children ?? []).map((c) => c.parent_id as string));
+    const failed = data.filter((r) => !parents.has(r.id as string));
+    if (!failed.length) return undefined;
+    await db.from("campaign_ads").delete().in("id", failed.map((r) => r.id as string));
+    return failed[0].number as number;
+  } catch (error) {
+    console.error("[ads] replacing the failed ad failed", error);
+    return undefined;
+  }
 }
 
 /** A finished ad an earlier attempt of the same tool call already made, if any. */
@@ -136,7 +171,7 @@ export async function storeAdImage(
   const db = supabase();
   await throwIfStopped(adId);
   const path = `${campaignId}/${adId}.png`;
-  const upload = await db.storage.from(AD_BUCKET).upload(path, image.bytes, { contentType: "image/png", upsert: true });
+  const upload = await uploadWithRetry(path, image.bytes);
   if (upload.error) throw new Error(`storing the image failed: ${upload.error.message}`);
   // Only a row still being made becomes ready; a stopped one is gone by now.
   const { data: updated } = await db
@@ -146,7 +181,7 @@ export async function storeAdImage(
       image_path: path,
       width: image.width,
       height: image.height,
-      fal_request_id: image.requestId,
+      ...(image.requestId && { fal_request_id: image.requestId }),
       ...extra,
     })
     .eq("id", adId)
@@ -157,6 +192,23 @@ export async function storeAdImage(
     throw new AdStoppedError();
   }
   return { path };
+}
+
+/**
+ * Uploads an ad image to our bucket. The image is paid for by now, so a
+ * storage hiccup (Supabase's 520s) gets two more tries before it counts as
+ * a failure.
+ */
+export async function uploadWithRetry(path: string, bytes: Uint8Array) {
+  const bucket = supabase().storage.from(AD_BUCKET);
+  let upload = await bucket.upload(path, bytes, { contentType: "image/png", upsert: true });
+  for (const wait of [1_500, 5_000]) {
+    if (!upload.error) break;
+    console.warn(`[ads] storing the image failed (${upload.error.message}); trying again`);
+    await new Promise((r) => setTimeout(r, wait));
+    upload = await bucket.upload(path, bytes, { contentType: "image/png", upsert: true });
+  }
+  return upload;
 }
 
 /**

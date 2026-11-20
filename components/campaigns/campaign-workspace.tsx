@@ -55,7 +55,7 @@ import {
 } from "@/lib/agent/tools";
 import type { AdComment, Campaign, SavedAd, SavedHeadline } from "@/lib/campaigns";
 import { campaignTopic, EVENTS } from "@/lib/realtime";
-import type { BrandKit } from "@/lib/research/types";
+import type { BrandKit, CatalogItem } from "@/lib/research/types";
 import { browserSupabase } from "@/lib/supabase/browser";
 
 /** The user's edits to the researched kit: removed colors/fonts, audience tags. */
@@ -664,6 +664,7 @@ export function CampaignWorkspace({
                 pendingAds={pendingAds}
                 editingAds={editingAds}
                 brand={name}
+                products={kit?.catalog ?? []}
                 adError={adError}
                 onDeleteAd={deleteAd}
                 onAddComment={addComment}
@@ -710,6 +711,7 @@ function AdsPanel({
   pendingAds,
   editingAds,
   brand,
+  products,
   adError,
   onDeleteAd,
   onAddComment,
@@ -722,6 +724,7 @@ function AdsPanel({
   pendingAds: PendingAd[];
   editingAds: string[];
   brand: string;
+  products: CatalogItem[];
   adError?: string;
   onDeleteAd: (ad: SavedAd, scope: "version" | "ad") => void;
   onAddComment: (ad: SavedAd, comment: { x: number; y: number; body: string }) => Promise<boolean>;
@@ -738,6 +741,7 @@ function AdsPanel({
         pending={pendingAds}
         editing={editingAds}
         brand={brand}
+        products={products}
         onDelete={onDeleteAd}
         onAddComment={onAddComment}
         onDeleteComment={onDeleteComment}
