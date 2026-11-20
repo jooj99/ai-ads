@@ -11,6 +11,7 @@ import { CAMPAIGNS_TOPIC, campaignTopic, EVENTS, type CampaignChange } from "@/l
 import { supabase } from "@/lib/supabase/server";
 import { signUploads, uploadName } from "@/lib/uploads";
 import { logoImage } from "@/lib/ads/brand-assets";
+import { inlineIfLocal, isLocalUrl } from "@/lib/reachable";
 import { ResearchSession } from "@/lib/research/state";
 import { findBrandVisuals } from "@/lib/research/steps";
 import type { AdVerification } from "@/lib/ads/flow";
@@ -101,10 +102,14 @@ export async function prepareModelMessages(campaignId: string, messages: AgentUI
       return new Map<string, string>();
     }),
     // The agent sees the real logo, so it can judge requests about it.
+    // (Local dev: inline, since the model provider can't fetch 127.0.0.1.)
     getCampaignResearch(campaignId)
       .then((r) => logoImage(campaignId, r?.kit?.logo))
+      .then(async (l) => (l ? { ...l, url: await inlineIfLocal(l.url) } : null))
       .catch(() => null),
   ]);
+  const local = [...signed.entries()].filter(([, url]) => isLocalUrl(url));
+  for (const [name, url] of local) signed.set(name, await inlineIfLocal(url).catch(() => url));
   const withLogo = (m: AgentUIMessage, i: number): AgentUIMessage =>
     logo && i === messages.findIndex((x) => x.role === "user")
       ? {
@@ -127,7 +132,7 @@ export async function prepareModelMessages(campaignId: string, messages: AgentUI
             const name = uploadName(campaignId, p.url);
             // Not a chat upload: the brand logo added above (the chat route
             // drops any other file part before a run starts).
-            if (!name) return p.url.startsWith("https://") ? [p] : [];
+            if (!name) return p.url.startsWith("https://") || p.url.startsWith("data:") ? [p] : [];
             const url = signed.get(name);
             if (!url || !visible.has(name)) {
               return [{ type: "text" as const, text: `(An earlier image the user attached, ref "${name}", not shown again.)` }];

@@ -6,6 +6,7 @@ import { broadcastAdActivity } from "@/lib/ads/activity";
 import { AD_BUCKET, previewPath } from "@/lib/ads/store";
 import { asPng, previewWebp, WEBP } from "@/lib/ads/webp";
 import type { BrandKit, CatalogItem } from "@/lib/research/types";
+import { fetchLocal, isLocalUrl } from "@/lib/reachable";
 import { isPublicHttpUrl } from "@/lib/research/url";
 import { supabase } from "@/lib/supabase/server";
 
@@ -164,10 +165,19 @@ export async function falImage(
   if (!credentials) throw new Error("image generation isn't configured");
   try {
     const fal = createFalClient({ credentials });
+    // Local dev: our Storage is on 127.0.0.1, which fal can't reach, so those
+    // images go to fal's own storage first. Production URLs pass through.
+    const imageUrls = await Promise.all(
+      input.imageUrls.map(async (url) => {
+        if (!isLocalUrl(url)) return url;
+        const { bytes, type } = await fetchLocal(url);
+        return fal.storage.upload(new Blob([new Uint8Array(bytes)], { type }));
+      }),
+    );
     const result = await fal.subscribe(AD_MODEL, {
       input: {
         prompt: `${input.systemPrompt}\n\n---\n\n${input.prompt}`,
-        image_urls: input.imageUrls,
+        image_urls: imageUrls,
         aspect_ratio: "9:16",
         resolution: RESOLUTION,
         output_format: "png",

@@ -7,7 +7,12 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "demo-user": "node --env-file-if-exists=.env.local --env-file-if-exists=.env.development.local scripts/create-demo-user.mjs"
+    "demo-user": "node --env-file-if-exists=.env.local --env-file-if-exists=.env.development.local scripts/create-demo-user.mjs",
+    "demo-user:prod": "node --env-file=.env.local scripts/create-demo-user.mjs",
+    "db:start": "npx supabase@2 start -x imgproxy,vector,postgres-meta",
+    "db:stop": "npx supabase@2 stop",
+    "db:env": "node scripts/use-local-supabase.mjs",
+    "db:reset": "npx supabase@2 db reset"
   },
   "dependencies": {
     "@ai-sdk/react": "^4.0.181",
