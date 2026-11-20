@@ -83,6 +83,12 @@ export function researchTools(campaignId: string, runId?: string) {
           (c) => steps.loadCatalog(c, input),
         ),
     },
+    // A product the user linked to in chat: the agent's, so it shows as added
+    // and survives research re-runs.
+    addProductFromLink: {
+      ...t.addProductFromLink,
+      execute: (input: { url: string }) => run("agent", false, (c) => steps.addProductFromLink(c, input)),
+    },
     removeProducts: {
       ...t.removeProducts,
       execute: (input: { ids: string[] }) => run("agent", false, (c) => steps.removeProducts(c, input)),

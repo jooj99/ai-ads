@@ -10,7 +10,9 @@ import type {
   ResearchStep,
   SelectedProduct,
 } from "@/lib/research/types";
+import { adActivity } from "@/lib/ads/activity";
 import { adImageUrl, deleteAdFiles } from "@/lib/ads/store";
+import type { AdActivity } from "@/lib/realtime";
 import { deleteFontFiles } from "@/lib/research/font-store";
 import { deleteUploads } from "@/lib/uploads";
 import { supabase } from "@/lib/supabase/server";
@@ -36,7 +38,10 @@ export type CampaignSummary = Campaign & {
   step?: string;
   logo?: string;
   offering?: "goods" | "services";
-  productCount: number;
+  /** Ads being made or edited right now. */
+  ads: AdActivity;
+  /** When `ads` was counted (server time): a live broadcast only wins if it's newer. */
+  adsAt: string;
 };
 
 export type CampaignResearch = {
@@ -88,17 +93,18 @@ export async function createCampaign(url: URL): Promise<Campaign> {
 export async function listCampaigns(): Promise<CampaignSummary[]> {
   const { data, error } = await supabase()
     .from("campaigns")
-    .select("*, brand_kits(logo_url, offering, research_steps), campaign_products(count)")
+    .select("*, brand_kits(logo_url, offering, research_steps)")
     .order("created_at", { ascending: false })
     .limit(100);
   if (error) throw error;
+  const adsAt = new Date().toISOString();
+  const activity = await adActivity((data ?? []).map((row) => row.id as string)).catch(() => new Map<string, AdActivity>());
   return (data ?? []).map((row) => {
     const kit = row.brand_kits as {
       logo_url: string | null;
       offering: string | null;
       research_steps: ResearchStep[] | null;
     } | null;
-    const counted = row.campaign_products as { count: number }[] | null;
     return {
       ...toCampaign(row as CampaignRow),
       step:
@@ -107,7 +113,8 @@ export async function listCampaigns(): Promise<CampaignSummary[]> {
           : undefined,
       logo: kit?.logo_url ?? undefined,
       offering: (kit?.offering as CampaignSummary["offering"]) ?? undefined,
-      productCount: counted?.[0]?.count ?? 0,
+      ads: activity.get(row.id as string) ?? { making: 0, editing: 0, total: 0 },
+      adsAt,
     };
   });
 }
@@ -605,4 +612,18 @@ export async function reviewAdComment(id: string, commentId: string, resolved: b
     body: comment.body,
   });
   if (insertError) throw insertError;
+}
+
+/** Rewrites an open comment (applied ones are history and can't change). */
+export async function updateAdComment(id: string, commentId: string, body: string): Promise<void> {
+  if (!UUID.test(id) || !UUID.test(commentId)) throw new Error("Unknown comment");
+  const { data, error } = await supabase()
+    .from("ad_comments")
+    .update({ body })
+    .eq("campaign_id", id)
+    .eq("id", commentId)
+    .eq("status", "open")
+    .select("id");
+  if (error) throw error;
+  if (!data?.length) throw new Error("That comment can't be edited any more.");
 }

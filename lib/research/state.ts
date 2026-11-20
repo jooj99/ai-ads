@@ -474,7 +474,7 @@ export class ResearchSession {
 }
 
 /** A page's identity for matching: host without www, path without trailing slash or query. */
-function pageKey(url: string): string {
+export function pageKey(url: string): string {
   try {
     const u = new URL(url);
     return `${u.hostname.replace(/^www\./, "").toLowerCase()}${u.pathname.replace(/\/$/, "").toLowerCase()}`;

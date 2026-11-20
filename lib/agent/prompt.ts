@@ -8,6 +8,9 @@ import type { CampaignResearch, SavedAd, SavedHeadline } from "@/lib/campaigns";
  * context, never as facts the model may embellish) and what it should do at
  * this point in the loop: research, headline choice and ad generation.
  */
+/** Catalogs up to this size are listed in full in the instructions. */
+const CATALOG_IN_PROMPT = 80;
+
 export function agentInstructions(
   { campaign, kit }: CampaignResearch,
   headlines: SavedHeadline[],
@@ -31,6 +34,25 @@ export function agentInstructions(
     })
     .join("\n");
 
+  // The whole catalog when it's small enough to list, so the agent can match
+  // what the user calls an item ("the lavender case") to its id directly;
+  // bigger catalogs are searched with getCatalog.
+  const catalog = kit?.catalog ?? [];
+  const catalogList =
+    catalog.length > 0 && catalog.length <= CATALOG_IN_PROMPT
+      ? catalog
+          .map((p) => {
+            const facts = [p.typeName ?? p.productType, p.price].filter(Boolean).join("; ");
+            return `- ${p.title}${facts ? ` (${facts})` : ""}${p.isHero ? " [hero]" : ""}${p.images.length ? "" : " [no photo]"} (id: ${p.id})`;
+          })
+          .join("\n")
+      : "";
+  const catalogFact = catalogList
+    ? `Everything in the catalog (${catalog.length} ${noun}):\n${catalogList}`
+    : catalog.length
+      ? `The catalog has ${catalog.length} ${noun}; only the heroes are listed here. Search the rest with getCatalog (query = the user's words for the item).`
+      : "";
+
   const facts = [
     `Brand: ${brand} (${campaign.domain})`,
     kit?.tagline && `Tagline: ${kit.tagline}`,
@@ -44,6 +66,7 @@ export function agentInstructions(
     kit?.voice?.sampleLine && `A line in this voice: "${kit.voice.sampleLine}"`,
     kit?.productTypes.length && `Kinds of ${noun}: ${kit.productTypes.map((t) => t.name).join(", ")}`,
     heroes && `Hero ${noun} picked for ads:\n${heroes}`,
+    catalogFact,
   ]
     .filter(Boolean)
     .join("\n");
@@ -81,7 +104,8 @@ Your job is to help the user build a set of headlines and CTAs for the campaign'
 - Options: each at most about 6 words, in the brand's voice, specific to their ${noun} and value proposition, each from a different angle (for example product-led, audience benefit, emotional). CTAs are 1–3 words. Never invent facts research didn't find: no discounts, prices, awards, statistics or guarantees. New options should differ from the saved list.
 - When the user continues from a card with new picks (the proposeHeadlines result's "picked" list), or submits an older card ("Headlines from an earlier set"): say in one short sentence that you're making their ads, then call generateAd once for each newly picked headline, all in the same step so they run in parallel. Don't generate for headlines they removed or for ones that already have an ad unless asked.
 - For each ad, pass productIds: 1–2 hero ${noun} (ids from the list above, or from getCatalog) whose photos best suit that headline, varying the products across ads when the headlines differ. Skip anything marked [no photo].
-- generateAd applies the brand's colors, fonts and voice itself; you only choose the headline and products. When the ads come back, reply in one or two sentences: how many are ready, and that they're in the Ads tab (where they can be opened or downloaded). If one failed, say why from its summary and offer to retry. Don't describe the images in detail; you can't see them.
+- Ads about a specific item. When the user names or describes one ("make an ad for the lavender case", "one about brow lamination"), match it to the catalog: the list above, or getCatalog with their words as the query when the catalog isn't listed or nothing fits. Use the item they mean even if it isn't a hero. If several fit, pick the closest and say which; if none does, say so and ask for a link. When they paste a link to a product or service page, call addProductFromLink with it (no need to load the research skill), then use the id it returns. Either way, pass that id in generateAd's productIds (you may add one more item only if they asked). For the copy, use a saved headline that suits the item; otherwise write one in the brand's voice that fits it (and a CTA), save it with saveHeadline, then call generateAd. If the item has no photo, call findPhotos with its id first; if it still has none, tell them and ask for a link to its page. A generateAd failure saying an id isn't in the catalog means look it up again; never guess ids.
+- generateAd applies the brand's colors, fonts and voice itself; you only choose the headline and products. Before an ad is shown it's checked against the real logo and products, and fixed automatically if the logo is wrong or a product or screen was invented; the tool summary says so. Mention a fix in a few words; if the summary says something is still not right, say what and offer to remake the ad. When the ads come back, reply in one or two sentences: how many are ready, and that they're in the Ads tab (where they can be opened or downloaded). If one failed, say why from its summary and offer to retry. Don't describe the images in detail; you can't see them.
 - When the user asks for an ad for a saved headline, for another variation, or to retry or remake one with different ${noun}, call generateAd for it. Only generate for saved headlines: save new copy first with saveHeadline.
 - Ads are numbered (Ad 1, Ad 2…) and each edit adds a version (v1, v2…) to the same number. Always refer to ads by number in your replies. When the user names an ad by number, use the id of its current version unless they name a version.
 - When the user asks to delete an ad or a version, call deleteAd (scope "ad" for the whole ad, "version" for one version). If it's ambiguous which they mean, ask first. Never delete unprompted.

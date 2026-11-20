@@ -4,7 +4,7 @@ import { fetchHtml, imagesFromHtml, isImageFragment, type LayoutLink } from "./h
 import { classifyLinks, type CandidateLink, type LinkPicks, type PickedLink } from "./links";
 import { DAY_MS, withRateLimitRetry, type PageResearch } from "./page";
 import { MAX_PRODUCT_TYPES, type Offering, type Product } from "./types";
-import { absoluteUrl } from "./url";
+import { absoluteUrl, isPublicHttpUrl } from "./url";
 
 /**
  * Catalog discovery for sites without Shopify's /products.json. A small model
@@ -361,6 +361,202 @@ export async function findSiteServices(
   return withoutSiteChrome(found, notItemPhotos(page));
 }
 
+// --- one product from a link ---------------------------------------------------
+
+/**
+ * Reads one product (or service) page the user linked to and returns it as a
+ * catalog item with the page's own photos, or null if no item with a title
+ * and photo could be read. Tries, in order:
+ * 1. Shopify's product JSON (`/products/<handle>.json`): exact title, price
+ *    and every product photo, free and fast; any Shopify store has it;
+ * 2. Firecrawl's product read plus the rendered HTML (ranked page photos
+ *    when the page isn't a shop listing);
+ * 3. the plain HTML: JSON-LD Product data, then the share image and <img>s.
+ * `notPhotos` are file names that are never the item's photo (the site's
+ * logo and share image).
+ */
+export async function readProductPage(
+  fc: Firecrawl | null,
+  url: URL,
+  notPhotos: Set<string> = new Set(),
+): Promise<Product | null> {
+  const link = url.href;
+  // The page's real photos: one copy of each file (sites list the same photo
+  // at several sizes), no site chrome or self-described banners.
+  const keep = (images: string[]) => {
+    const seen = new Set<string>();
+    return unique(images.map((src) => absoluteUrl(src, link)))
+      .filter((src) => {
+        const name = fileName(src);
+        if (!isPublicHttpUrl(src) || !isPhoto(src) || isImageFragment(src, link)) return false;
+        if (notPhotos.has(name) || DECORATION.test(name) || seen.has(name)) return false;
+        seen.add(name);
+        return true;
+      })
+      .slice(0, 8);
+  };
+
+  const shop = await shopifyProduct(url).catch(() => null);
+  if (shop && keep(shop.images).length) return { ...shop, images: keep(shop.images) };
+
+  if (fc) {
+    try {
+      const doc = await withRateLimitRetry(() =>
+        fc.scrape(link, { formats: ["product", "rawHtml"], maxAge: DAY_MS, timeout: 45_000 }),
+      );
+      const p = doc.product;
+      const meta = doc.metadata ?? {};
+      const title = p?.title || cleanTitle(meta.ogTitle ?? meta.title);
+      const variantPhotos = (p?.variants ?? []).flatMap((v) => (v.images ?? []).map((img) => img.url));
+      // With the store's own product photos in hand, other page photos only
+      // count from the same image host (not review widgets or promos elsewhere).
+      const photoHosts = new Set(variantPhotos.flatMap((src) => hostOf(absoluteUrl(src, link))));
+      const pagePhotos =
+        doc.rawHtml && title
+          ? rankPagePhotos(keep(imagesFromHtml(doc.rawHtml, link)), {
+              title,
+              ogImage: absoluteUrl(meta.ogImage, link),
+              retail: new Set(),
+            }).filter((src) => !photoHosts.size || photoHosts.has(hostOf(src)[0] ?? ""))
+          : [];
+      const images = keep([...variantPhotos, ...pagePhotos]);
+      if (title && images.length) {
+        return {
+          id: link,
+          title: unspace(title),
+          url: link,
+          price: formatPrice(p?.variants?.[0]?.price),
+          productType: p?.category,
+          description: (p?.description ?? meta.description ?? meta.ogDescription)?.slice(0, 600),
+          images,
+        };
+      }
+    } catch (error) {
+      console.error(`[research] reading the linked product page failed: ${link}`, error);
+    }
+  }
+
+  try {
+    const { html, base } = await fetchHtml(url);
+    const ld = productFromJsonLd(html);
+    const title = ld?.name ?? cleanTitle(metaContent(html, "og:title") ?? html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]);
+    if (!title) return null;
+    const ogImage = absoluteUrl(metaContent(html, "og:image"), base);
+    const images = keep([
+      ...(ld?.images ?? []),
+      ...rankPagePhotos(imagesFromHtml(html, base), { title, ogImage, retail: new Set() }),
+    ]);
+    if (!images.length) return null;
+    return {
+      id: link,
+      title: unspace(decodeEntities(title)),
+      url: link,
+      price: ld?.price,
+      description: (ld?.description ?? metaContent(html, "og:description") ?? metaContent(html, "description"))?.slice(0, 600),
+      images,
+    };
+  } catch (error) {
+    console.error(`[research] reading the linked page's HTML failed: ${link}`, error);
+    return null;
+  }
+}
+
+function hostOf(src: string | undefined): string[] {
+  try {
+    return src ? [new URL(src).hostname] : [];
+  } catch {
+    return [];
+  }
+}
+
+/** A Shopify product page's JSON (`…/products/<handle>.json`), or null if it isn't one. */
+async function shopifyProduct(url: URL): Promise<Product | null> {
+  const handle = url.pathname.match(/\/products\/([^/?#.]+)/)?.[1];
+  if (!handle) return null;
+  const res = await fetch(`${url.origin}/products/${handle}.json`, {
+    headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok || !(res.headers.get("content-type") ?? "").includes("json")) return null;
+  const { product } = (await res.json()) as {
+    product?: {
+      title: string;
+      body_html?: string;
+      product_type?: string;
+      tags?: string | string[];
+      images?: { src: string }[];
+      variants?: { price?: string }[];
+    };
+  };
+  if (!product?.title) return null;
+  const price = product.variants?.[0]?.price;
+  return {
+    id: url.href,
+    title: product.title,
+    url: url.href,
+    price: price ? `$${price}` : undefined,
+    productType: product.product_type || undefined,
+    tags: Array.isArray(product.tags) ? product.tags : product.tags?.split(",").map((t) => t.trim()).filter(Boolean),
+    description: product.body_html?.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 600) || undefined,
+    images: (product.images ?? []).map((i) => i.src),
+  };
+}
+
+/** The first schema.org Product in the page's JSON-LD: name, photos, price, description. */
+function productFromJsonLd(html: string): { name?: string; images: string[]; price?: string; description?: string } | null {
+  for (const match of html.matchAll(/<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)) {
+    let data: unknown;
+    try {
+      data = JSON.parse(match[1].trim());
+    } catch {
+      continue;
+    }
+    const nodes: unknown[] = [];
+    const walk = (n: unknown) => {
+      if (Array.isArray(n)) n.forEach(walk);
+      else if (n && typeof n === "object") {
+        nodes.push(n);
+        const graph = (n as { "@graph"?: unknown })["@graph"];
+        if (graph) walk(graph);
+      }
+    };
+    walk(data);
+    const product = nodes.find((n) => {
+      const type = (n as { "@type"?: unknown })["@type"];
+      return type === "Product" || (Array.isArray(type) && type.includes("Product"));
+    }) as { name?: string; description?: string; image?: unknown; offers?: unknown } | undefined;
+    if (!product) continue;
+    const images = [product.image]
+      .flat(2)
+      .map((i) => (typeof i === "string" ? i : (i as { url?: string } | null)?.url))
+      .filter((i): i is string => typeof i === "string");
+    const offer = [product.offers].flat()[0] as { price?: string | number; priceCurrency?: string } | undefined;
+    const price =
+      offer?.price !== undefined
+        ? formatPrice({ amount: Number(offer.price), currency: offer.priceCurrency, formatted: String(offer.price) })
+        : undefined;
+    return { name: product.name, images, price, description: product.description };
+  }
+  return null;
+}
+
+/** A <meta property|name="…" content="…"> value. */
+function metaContent(html: string, key: string): string | undefined {
+  const tag = html.match(new RegExp(`<meta[^>]+(?:property|name)=["']${key}["'][^>]*>`, "i"))?.[0];
+  const value = tag?.match(/content=["']([^"']*)["']/i)?.[1];
+  return value ? decodeEntities(value) : undefined;
+}
+
+function decodeEntities(text: string): string {
+  return text
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;|&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .trim();
+}
+
 /**
  * After the model picks heroes, some picks may be services whose pages
  * weren't read (only their nav links were). Read those pages now so every
@@ -635,7 +831,7 @@ export function sharedPhotoCleanup(
   return changed;
 }
 
-function notItemPhotos(page: PageResearch): Set<string> {
+export function notItemPhotos(page: PageResearch): Set<string> {
   return new Set(
     [page.shareImage, ...page.logoCandidates]
       .filter((src): src is string => Boolean(src) && !src!.startsWith("data:"))
@@ -652,7 +848,14 @@ function isPhoto(src: string): boolean {
   // Unrendered template placeholders from raw HTML, e.g. {{variantImageURL}}.
   if (/%7b%7b|\{\{|\$\{|%24%7b/i.test(src)) return false;
   // Third-party widgets (survey popups, ad and analytics pixels) aren't product photos.
-  if (/qualtrics|doubleclick|googletagmanager|google-analytics|facebook\.com\/tr/.test(src)) return false;
+  if (/qualtrics|doubleclick|googletagmanager|google-analytics|facebook\.com\/tr|cdn-cgi\/challenge|fillout|typeform|hubspot|intercom|calendly|hotjar/.test(src)) return false;
+  // Shoppers' review photos (review widgets) aren't the item's own photos.
+  if (/turnto|yotpo|bazaarvoice|okendo|judge\.me|stamped\.io|powerreviews|trustpilot|reviews?[-_.]?(?:io|cdn|media)/.test(src)) return false;
+  // Thumbnails and color swatches by their requested size (…?wid=32&hei=32).
+  const size = (keys: string) => Number(src.match(new RegExp(`[?&](?:${keys})=(\\d+)`, "i"))?.[1] ?? NaN);
+  if (size("wid|width|w") <= 120 || size("hei|height|h") <= 120) return false;
+  // Analytics beacons dressed as images (Apple's echo.png?pageViewId=…, Adobe's /b/ss/).
+  if (/[?&](pageviewid|eventtype|pagename|recordtime)=|no-js|\/b\/ss\/|\/\/[^/]*(metrics|analytics|beacon|telemetry)\./i.test(src)) return false;
   return !/logo|icon|sprite|badge|avatar|pixel|tracking|placeholder|spinner|arrow|payment|flag|emoji|close-?(?:btn|button)|btn-close/.test(path);
 }
 

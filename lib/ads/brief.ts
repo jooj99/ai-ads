@@ -43,6 +43,7 @@ export const AD_SYSTEM_PROMPT = `You are a senior performance-marketing art dire
 
 Rules for every ad:
 - The attached product photos show the brand's real products. Feature those exact products: keep their shape, colors, materials, prints and any logos on them. Never invent a product, change its design, or add products that aren't in the photos. You may restage them (new background, lighting, angle, hands holding them, props) as long as the product itself is unchanged.
+- Never invent anything the brand sells or shows: no made-up products, packaging, devices, app screens, dashboards, charts, maps or data. Every product, screen or interface in the ad must come from the attached photos, shown as it is. For a service or software brand, a screen may only be one of the attached screenshots, unchanged; if none is attached, show people, places or the outcome of the service instead of an interface.
 - Render the headline and the call-to-action exactly as given, spelled exactly, each once. The headline is the most prominent text. The call-to-action is a clear button. Add no other words, prices, discounts, claims or slogans, except the brand name or logo.
 - The attached brand logo is the real logo: reproduce it exactly as in its image (same shape, letterforms, colors and proportions), small and legible. Never invent, restyle or simplify it, and don't add a separate wordmark it doesn't have.
 - Brand color swatches are solid squares of the exact brand colors. Use those exact colors, each where the brief assigns it (match the swatch, not a similar shade). The swatches are references only: never draw them.
@@ -97,6 +98,10 @@ export function buildAdBrief({
     },
     headline: { text: headline, render: "Exactly this text, once, as the largest type." },
     call_to_action: { text: cta, render: "Exactly this text, once, as a button." },
+    ...(kit.offering === "services" && {
+      services_note:
+        "This brand sells a service, not physical goods. The attached photos are real screenshots or photos of the service: show them unchanged. Do not draw any other screen, dashboard, app interface, chart or data, and do not invent a physical product.",
+    }),
     hero_products: productEntries,
     // Each color assigned to a job, with its swatch image when one was sent.
     colors: kit.colors.map((c) => {

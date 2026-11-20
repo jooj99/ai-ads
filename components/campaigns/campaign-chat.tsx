@@ -312,6 +312,7 @@ const RESEARCH_LABELS: Record<string, string> = {
   listSiteLinks: "Listing the site's links",
   findOfferingPages: "Choosing which pages to read",
   loadCatalog: "Loading the catalog",
+  addProductFromLink: "Reading the product link",
   removeProducts: "Removing items",
   writeBrandInsights: "Writing the value proposition, audience and voice",
   groupCatalog: "Grouping the catalog and picking heroes",

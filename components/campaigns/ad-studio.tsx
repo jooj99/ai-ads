@@ -13,6 +13,7 @@ import {
   ImageIcon,
   Loader2Icon,
   MoreHorizontalIcon,
+  PencilIcon,
   SparklesIcon,
   Trash2Icon,
   XIcon,
@@ -82,6 +83,7 @@ export function AdStudio({
   onDelete,
   onAddComment,
   onDeleteComment,
+  onEditComment,
   onApply,
   onReview,
 }: {
@@ -96,6 +98,12 @@ export function AdStudio({
     comment: { x: number; y: number; body: string },
   ) => Promise<boolean>;
   onDeleteComment: (ad: SavedAd, comment: AdComment) => void;
+  /** Rewrites an open comment's text; resolves true once saved. */
+  onEditComment: (
+    ad: SavedAd,
+    comment: AdComment,
+    body: string,
+  ) => Promise<boolean>;
   onApply: (ad: SavedAd, count: number) => void;
   /** The answer to "was it resolved?" for a comment an edit applied. */
   onReview: (comment: AdComment, resolved: boolean) => Promise<void>;
@@ -227,6 +235,7 @@ export function AdStudio({
             leavingComments={leavingComments}
             fading={adLeaving}
             onRemoveComment={(c) => removeComment(version, c)}
+            onEditComment={(c, body) => onEditComment(version, c, body)}
           />
           <AdDetails
             number={ad.number}
@@ -424,6 +433,7 @@ function AdCanvas({
   leavingComments,
   fading,
   onRemoveComment,
+  onEditComment,
 }: {
   ad: SavedAd;
   number: number;
@@ -436,6 +446,8 @@ function AdCanvas({
   fading: boolean;
   /** Resolves or deletes an open comment (it shrinks away, then goes). */
   onRemoveComment: (comment: AdComment) => void;
+  /** Rewrites an open comment; resolves true once saved. */
+  onEditComment: (comment: AdComment, body: string) => Promise<boolean>;
   /** "v3" for a version id of this ad. */
   versionLabel: (id: string) => string;
   onReview: (comment: AdComment, resolved: boolean) => Promise<void>;
@@ -447,10 +459,10 @@ function AdCanvas({
 }) {
   const [draft, setDraft] = useState<{ x: number; y: number }>();
   const open = ad.comments.filter((c) => c.status === "open");
-  // Pinned on this version and applied by a later edit.
-  const made = ad.comments.filter(
-    (c) => c.status !== "open" && c.status !== "resolved",
-  );
+  // Pinned on this version, applied by a later edit, and still waiting for
+  // "was it resolved?". Answered ones are done: resolved ones are deleted, and
+  // unresolved ones live on as the copy re-opened on the newest version.
+  const made = ad.comments.filter((c) => c.status === "applied");
 
   function place(e: MouseEvent<HTMLDivElement>) {
     if (
@@ -516,7 +528,7 @@ function AdCanvas({
           ))}
           {/* Comments the edit that made this version applied: was each resolved? */}
           {ad.appliedComments
-            .filter((c) => c.status !== "resolved")
+            .filter((c) => c.status === "applied")
             .map((c) => (
               <ReviewPin key={c.id} comment={c} onReview={onReview} />
             ))}
@@ -527,6 +539,7 @@ function AdCanvas({
               kind="open"
               label={i + 1}
               leaving={leavingComments.includes(c.id)}
+              onEdit={editing ? undefined : (body) => onEditComment(c, body)}
               // Either way it goes: ✓ means it's dealt with, ✕ that it's not wanted.
               actions={
                 <CheckOrX
@@ -603,6 +616,7 @@ function Pin({
   label,
   leaving,
   actions,
+  onEdit,
   children,
 }: {
   comment: AdComment;
@@ -612,9 +626,13 @@ function Pin({
   actions?: ReactNode;
   /** Shrinks and fades the pin out (and closes its card), e.g. once resolved. */
   leaving?: boolean;
+  /** When given, the card has a ✎ that turns the comment into a text box; resolves true once saved. */
+  onEdit?: (body: string) => Promise<boolean>;
   children?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  // Editing keeps the card open even when the pointer leaves it.
+  const [editing, setEditing] = useState(false);
   const icon =
     label ??
     (kind === "review" ? (
@@ -626,7 +644,7 @@ function Pin({
     ));
   return (
     <HoverCard
-      open={open && !leaving}
+      open={(open || editing) && !leaving}
       onOpenChange={setOpen}
       openDelay={80}
       closeDelay={150}
@@ -653,13 +671,103 @@ function Pin({
         align="center"
         className="flex w-auto max-w-72 items-center gap-3 py-1.5 pr-1.5 pl-3"
       >
-        <div className="flex min-w-0 flex-col gap-0.5 py-0.5">
-          <p className="text-sm leading-snug break-words">{comment.body}</p>
-          {children}
-        </div>
-        {actions}
+        {editing && onEdit ? (
+          <EditComment
+            initial={comment.body}
+            onCancel={() => setEditing(false)}
+            onSave={async (body) => {
+              const ok = await onEdit(body);
+              if (ok) setEditing(false);
+              return ok;
+            }}
+          />
+        ) : (
+          <>
+            <div className="flex min-w-0 flex-col gap-0.5 py-0.5">
+              <p className="text-sm leading-snug break-words">{comment.body}</p>
+              {children}
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+              {onEdit && (
+                <button
+                  type="button"
+                  aria-label="Edit comment"
+                  title="Edit comment"
+                  onClick={() => setEditing(true)}
+                  className="flex size-6 items-center justify-center rounded-full text-muted-foreground ring-1 ring-foreground/15 transition-colors hover:bg-muted hover:text-foreground"
+                >
+                  <PencilIcon className="size-3" />
+                </button>
+              )}
+              {actions}
+            </div>
+          </>
+        )}
       </HoverCardContent>
     </HoverCard>
+  );
+}
+
+/** A comment's text as an editable box in its card: Enter saves, Shift+Enter is a new line, Escape cancels. */
+function EditComment({
+  initial,
+  onSave,
+  onCancel,
+}: {
+  initial: string;
+  onSave: (body: string) => Promise<boolean>;
+  onCancel: () => void;
+}) {
+  const [body, setBody] = useState(initial);
+  const [saving, setSaving] = useState(false);
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  }, []);
+  async function save() {
+    const text = body.trim();
+    if (!text || saving) return;
+    if (text === initial) return onCancel();
+    setSaving(true);
+    if (!(await onSave(text))) setSaving(false);
+  }
+  return (
+    <div className="flex w-64 flex-col gap-1.5 py-1">
+      <Textarea
+        ref={ref}
+        value={body}
+        onChange={(e) => setBody(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.stopPropagation();
+            onCancel();
+          }
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            void save();
+          }
+        }}
+        maxLength={500}
+        rows={2}
+        className="min-h-0 resize-none text-sm"
+      />
+      <div className="flex justify-end gap-1">
+        <Button size="xs" variant="ghost" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button
+          size="xs"
+          onClick={() => void save()}
+          disabled={!body.trim() || saving}
+        >
+          {saving && <Loader2Icon className="animate-spin" />}
+          Save
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -884,9 +992,7 @@ function AdDetails({
 }) {
   const open = ad.comments.filter((c) => c.status === "open");
   // Pinned here, applied by a later edit (resolved ones are gone).
-  const applied = ad.comments.filter(
-    (c) => c.status !== "open" && c.status !== "resolved",
-  );
+  const applied = ad.comments.filter((c) => c.status === "applied");
   const v = versions.indexOf(ad) + 1;
 
   return (

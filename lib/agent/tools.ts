@@ -165,7 +165,7 @@ export const generateAdSpec = tool({
       .min(1)
       .max(3)
       .optional()
-      .describe("Catalog ids (from the hero list or getCatalog) of 1–2 products whose photos suit this headline. Defaults to the first hero."),
+      .describe("Catalog ids (from the catalog in your instructions, getCatalog or addProductFromLink) of 1–2 products whose photos suit this headline; the item the user asked for when they named one or linked to it. Defaults to the first hero."),
     references,
   }),
   outputSchema: adResult,
@@ -247,10 +247,11 @@ export const researchToolSpecs = {
     outputSchema: researchResult,
   }),
   getCatalog: tool({
-    description: "A compact list of catalog items (id, title, listed type, assigned type, hero, price, photo count), filtered by type or search text.",
+    description:
+      "A compact list of catalog items (id, title, listed type, assigned type, hero, price, photo count), filtered by type or search text. Use it to find the item the user means: query with their words for it ('lavender case', 'brow lamination'), best match first, or with its page link.",
     inputSchema: z.object({
       typeName: z.string().optional(),
-      query: z.string().optional(),
+      query: z.string().optional().describe("Words describing the item (matched loosely against title, type, tags and description), or its page URL."),
       limit: z.number().int().min(1).max(200).optional(),
     }),
     outputSchema: researchResult,
@@ -298,6 +299,12 @@ export const researchToolSpecs = {
       urls: z.array(z.string().url()).max(12).optional(),
       mode: z.enum(["add", "replace"]).optional(),
     }),
+    outputSchema: researchResult,
+  }),
+  addProductFromLink: tool({
+    description:
+      "Add the product or service on one page the user linked to (a product page on the brand's site, or a listing elsewhere), with that page's own photos, so you can make an ad about it. Returns its catalog id (pass it to generateAd's productIds). If the link is already in the catalog it returns that item instead.",
+    inputSchema: z.object({ url: z.string().url().describe("The product page link, exactly as the user gave it.") }),
     outputSchema: researchResult,
   }),
   removeProducts: tool({

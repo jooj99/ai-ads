@@ -79,21 +79,25 @@ export async function POST(req: Request, ctx: RouteContext<"/api/campaigns/[id]/
  * that never returned. Those parts can't be validated or sent to the model,
  * so they're dropped (and an assistant message left empty with them).
  * Unanswered headline questions are kept; closeUnansweredChoices handles them.
+ * A tool call that appears twice (a run replayed into a chat that already
+ * showed it) keeps only its first copy: the model rejects repeated call ids.
  */
 function withoutInterruptedParts(raw: unknown): unknown {
   if (!Array.isArray(raw)) return raw;
+  const seenCalls = new Set<string>();
   return raw
     .map((message) => {
       if (!message || typeof message !== "object" || !Array.isArray(message.parts)) return message;
-      const parts = (message.parts as { type?: string; state?: string }[]).filter(
-        (part) =>
-          !(
-            typeof part.type === "string" &&
-            part.type.startsWith("tool-") &&
-            (part.state === "input-streaming" ||
-              (part.state === "input-available" && part.type !== "tool-proposeHeadlines"))
-          ),
-      );
+      const parts = (message.parts as { type?: string; state?: string; toolCallId?: string }[]).filter((part) => {
+        if (typeof part.type !== "string" || !part.type.startsWith("tool-")) return true;
+        if (part.state === "input-streaming" || (part.state === "input-available" && part.type !== "tool-proposeHeadlines")) {
+          return false;
+        }
+        if (!part.toolCallId) return true;
+        if (seenCalls.has(part.toolCallId)) return false;
+        seenCalls.add(part.toolCallId);
+        return true;
+      });
       return { ...message, parts };
     })
     .filter(

@@ -39,6 +39,7 @@ Match the request to the smallest set of tools:
 | "Read our /about page", "look at this page" | `readSite` with that `url` (it doesn't change the brand kit unless you pass `fields`), then use what it returned |
 | "The logo is wrong", "pull the colors again" | `readSite` on the homepage (or the page they point to) with `fields: ["logo"]` / `["colors"]` / `["fonts"]` |
 | "We're a service business", "we sell products, not services" | `setOffering`, then `findOfferingPages` + `loadCatalog` (`mode: "replace"`), then `groupCatalog` |
+| A link to one product or service page ("make an ad for this: <link>", "add this product") | `addProductFromLink` with that `url` (it reads the page's own photos and returns the item's id); for an ad, pass the id to `generateAd` |
 | "Also include the Super Loops collection", "add these products" | `loadCatalog` with `from: "pages"`, `urls: [...]`, `mode: "add"`, then `groupCatalog` |
 | "Group cases by phone model", "fewer types", "split X from Y" | `groupCatalog` with `guidance` that restates their direction |
 | "Feature the Super Loops", "make X a hero", "drop that type" | `getCatalog` to find the ids, then `setProductTypes` with every type you keep and its heroes; leave out `memberIds` to keep everyone's current type (only list members you're moving) |

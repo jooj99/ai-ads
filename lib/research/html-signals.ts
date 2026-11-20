@@ -34,7 +34,7 @@ export type HtmlSignals = {
 };
 
 const UA = "Mozilla/5.0 (compatible; PloyAdsResearch/1.0)";
-const MAX_STYLESHEETS = 4;
+export const MAX_STYLESHEETS = 4;
 const MAX_CSS_BYTES = 800_000;
 
 /** Header icons share the logo's techniques (masks, inline SVG); these words mark them. */
@@ -65,7 +65,45 @@ export async function collectHtmlSignals(
 /** A stylesheet and the URL it came from (relative url()s resolve against it). */
 export type Stylesheet = { href: string; css: string };
 
-export async function fetchStylesheets(html: string, base: string): Promise<Stylesheet[]> {
+/** How many stylesheets to read when looking for @font-face rules (big sites split CSS into dozens). */
+export const MAX_FONT_STYLESHEETS = 40;
+const MAX_IMPORTS = 10;
+const FETCH_CONCURRENCY = 8;
+
+/**
+ * A browser's user agent and headers for fetching a site's own assets. Some
+ * CDNs refuse requests that don't look like a page loading its stylesheets
+ * or fonts (apple.com answers a bare request for its font CSS with a 404).
+ */
+export const BROWSER_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+
+export function assetHeaders(kind: "style" | "font", url: string, referer: string): Record<string, string> {
+  const site = (u: string) => new URL(u).hostname.split(".").slice(-2).join(".");
+  return {
+    "user-agent": BROWSER_UA,
+    accept: kind === "style" ? "text/css,*/*;q=0.1" : "font/woff2,font/woff,*/*;q=0.1",
+    "accept-language": "en-US,en;q=0.9",
+    referer,
+    ...(kind === "font" && { origin: new URL(referer).origin }),
+    "sec-fetch-dest": kind,
+    "sec-fetch-mode": kind === "style" ? "no-cors" : "cors",
+    "sec-fetch-site":
+      new URL(url).origin === new URL(referer).origin ? "same-origin" : site(url) === site(referer) ? "same-site" : "cross-site",
+  };
+}
+
+/** Stylesheets that are mostly fonts (a font service, a fonts.css), read first. */
+function fontish(href: string) {
+  return /font|typekit|typography|typeface/i.test(href);
+}
+
+/**
+ * The page's stylesheets, fetched like a browser would. The first `limit`
+ * (the site's own first, in page order), plus any font stylesheets beyond
+ * that, plus what they @import. Missing or blocked sheets are skipped.
+ */
+export async function fetchStylesheets(html: string, base: string, limit = MAX_STYLESHEETS): Promise<Stylesheet[]> {
   const host = new URL(base).hostname.replace(/^www\./, "");
   const hrefs = unique(
     [...html.matchAll(/<link\b[^>]*>/gi)]
@@ -76,18 +114,51 @@ export async function fetchStylesheets(html: string, base: string): Promise<Styl
   );
   // Prefer the site's own stylesheets over third-party widgets.
   hrefs.sort((a, b) => Number(!sameSite(a, host)) - Number(!sameSite(b, host)));
+  const chosen = [...hrefs.slice(0, limit), ...hrefs.slice(limit).filter(fontish).slice(0, 5)];
 
-  const sheets = await Promise.allSettled(
-    hrefs.slice(0, MAX_STYLESHEETS).map(async (href) => {
-      const res = await fetch(href, {
-        headers: { "user-agent": UA },
-        signal: AbortSignal.timeout(6_000),
-      });
+  const get = async (href: string, referer: string): Promise<Stylesheet | null> => {
+    try {
+      const res = await fetch(href, { headers: assetHeaders("style", href, referer), signal: AbortSignal.timeout(6_000) });
       if (!res.ok) return null;
       return { href: res.url || href, css: (await res.text()).slice(0, MAX_CSS_BYTES) };
+    } catch {
+      return null;
+    }
+  };
+  const sheets = (await mapLimit(chosen, FETCH_CONCURRENCY, (href) => get(href, base))).filter(
+    (s): s is Stylesheet => s !== null,
+  );
+
+  // One level of @import (font services are often imported: Typekit, Google Fonts).
+  const seen = new Set([...chosen, ...sheets.map((s) => s.href)]);
+  const imports = unique(
+    sheets.flatMap((sheet) =>
+      [...sheet.css.matchAll(/@import\s+(?:url\(\s*)?["']?([^"')\s;]+)["']?\s*\)?/gi)].map((m) =>
+        absoluteUrl(m[1], sheet.href),
+      ),
+    ),
+  )
+    .filter((href) => isPublicHttpUrl(href) && !seen.has(href))
+    .slice(0, MAX_IMPORTS);
+  const imported = (await mapLimit(imports, FETCH_CONCURRENCY, (href) => get(href, base))).filter(
+    (s): s is Stylesheet => s !== null,
+  );
+  return [...sheets, ...imported];
+}
+
+/** Runs `fn` over `items`, at most `limit` at a time, keeping their order. */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) {
+        const i = next++;
+        out[i] = await fn(items[i]);
+      }
     }),
   );
-  return sheets.flatMap((s) => (s.status === "fulfilled" && s.value ? [s.value] : []));
+  return out;
 }
 
 /** Pure extraction, separated from fetching so it can be tested on fixtures. */
@@ -602,7 +673,17 @@ function mostFrequent(values: string[], limit: number): string[] {
 
 // --- font files ---------------------------------------------------------------
 
-type ParsedFontFace = { family: string; weight: [number, number]; style: "normal" | "italic"; url: string; latin: boolean };
+type ParsedFontFace = {
+  family: string;
+  weight: [number, number];
+  style: "normal" | "italic";
+  url: string;
+  /** The other formats listed for the same face, best first. */
+  alternates: string[];
+  /** Where it was declared (the stylesheet, or the page for inline styles). */
+  from: string;
+  latin: boolean;
+};
 
 /** Preferred font formats, best first; EOT and SVG fonts are skipped. */
 const FONT_FORMATS = ["woff2", "woff", "truetype", "opentype"];
@@ -648,6 +729,8 @@ export function fontFilesFor(
         weight: f === regular ? clampWeight(400, f.weight) : clampWeight(700, f.weight),
         style: "normal" as const,
         source: f.url,
+        referer: f.from,
+        ...(f.alternates.length && { alternates: f.alternates }),
       }));
     return { ...font, files };
   });
@@ -665,8 +748,11 @@ function parseFontFaces(css: string, base: string): ParsedFontFace[] {
       .map((m) => ({ url: m[1], format: (m[2] ?? formatFromUrl(m[1])).toLowerCase() }))
       .filter((o) => FONT_FORMATS.includes(o.format) && !o.url.startsWith("data:"))
       .sort((a, b) => FONT_FORMATS.indexOf(a.format) - FONT_FORMATS.indexOf(b.format));
-    const url = options[0] ? absoluteUrl(options[0].url, base) : undefined;
-    if (!url || !isPublicHttpUrl(url)) continue;
+    const urls = options
+      .map((o) => absoluteUrl(o.url, base))
+      .filter((u): u is string => Boolean(u) && isPublicHttpUrl(u!));
+    const url = urls[0];
+    if (!url) continue;
     const weights = (body.match(/font-weight\s*:\s*([^;]+)/i)?.[1] ?? "400")
       .trim()
       .split(/\s+/)
@@ -678,6 +764,8 @@ function parseFontFaces(css: string, base: string): ParsedFontFace[] {
       weight: [weights[0] ?? 400, weights[1] ?? weights[0] ?? 400],
       style: /font-style\s*:\s*(italic|oblique)/i.test(body) ? "italic" : "normal",
       url,
+      alternates: urls.slice(1),
+      from: base,
       // No range means the whole font; otherwise it should cover basic Latin.
       latin: !range || coversLatin(range),
     });

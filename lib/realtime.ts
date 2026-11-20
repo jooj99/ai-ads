@@ -16,13 +16,20 @@ export const campaignTopic = (id: string) => `campaign:${id}`;
 export const EVENTS = {
   /** campaignTopic: a research run ended and its result is saved. */
   finished: "finished",
-  /** CAMPAIGNS_TOPIC: a campaign's status, name, logo or current step changed. */
+  /** CAMPAIGNS_TOPIC: a campaign's status, name, logo, current step or ads in progress changed. */
   changed: "changed",
 } as const;
 
+/** Ads in progress for a campaign: new ones being made, and edits being made. */
+/** Ads in progress (making new ones, editing), and how many finished ads the campaign has. */
+export type AdActivity = { making: number; editing: number; total: number };
+
 export type CampaignChange = {
   id: string;
-  status: "researching" | "research_failed" | "ready";
+  /** Left out by ad-activity broadcasts, which don't change the research status. */
+  status?: "researching" | "research_failed" | "ready";
+  /** Ads in progress, sent whenever one starts or ends. */
+  ads?: AdActivity;
   name?: string;
   logo?: string;
   /** Label of the step running now, e.g. "Loading products". */

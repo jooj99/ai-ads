@@ -10,6 +10,7 @@ import {
   addHeadline,
   deleteAd,
   deleteAdComment,
+  updateAdComment,
   reviewAdComment,
   deleteCampaign,
   listAds,
@@ -204,4 +205,19 @@ export async function reviewAdCommentAction(campaignId: string, commentId: strin
   await requireUser();
   if (!id.safeParse(campaignId).success || !id.safeParse(commentId).success) return { ok: false, error: "Unknown comment." };
   return run(() => reviewAdComment(campaignId, commentId, resolved === true), "Couldn't save that answer.");
+}
+
+/** Rewrites an open comment's text. */
+export async function updateAdCommentAction(campaignId: string, commentId: string, body: string): Promise<ActionResult> {
+  await requireUser();
+  const parsed = z.object({ campaignId: id, commentId: id, body: z.string().trim().min(1).max(500) }).safeParse({
+    campaignId,
+    commentId,
+    body,
+  });
+  if (!parsed.success) return { ok: false, error: "Comments need 1 to 500 characters." };
+  return run(
+    () => updateAdComment(parsed.data.campaignId, parsed.data.commentId, parsed.data.body),
+    "Couldn't save that comment.",
+  );
 }

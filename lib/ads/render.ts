@@ -2,6 +2,7 @@ import "server-only";
 
 import { createFalClient } from "@fal-ai/client";
 
+import { broadcastAdActivity } from "@/lib/ads/activity";
 import { AD_BUCKET } from "@/lib/ads/store";
 import type { BrandKit, CatalogItem } from "@/lib/research/types";
 import { isPublicHttpUrl } from "@/lib/research/url";
@@ -14,7 +15,8 @@ import { supabase } from "@/lib/supabase/server";
 
 export const AD_MODEL = "fal-ai/nano-banana-pro/edit";
 const RESOLUTION = "2K";
-const FAL_TIMEOUT_MS = 240_000;
+// Generous for one image, but leaves room for a check and a fix inside one 300s step.
+const FAL_TIMEOUT_MS = 150_000;
 const MAX_PRODUCTS = 3;
 
 export function falCredentials() {
@@ -56,6 +58,7 @@ export async function startAdRow(row: AdRowInput): Promise<{ id: string; number:
     ? await db.from("campaign_ads").upsert(full, { onConflict: "tool_call_id" }).select("id, number").single()
     : await db.from("campaign_ads").insert(full).select("id, number").single();
   if (saved.error) throw saved.error;
+  await broadcastAdActivity(row.campaign_id); // the Campaigns list shows "Making an ad…"
   return { id: saved.data.id as string, number: (saved.data.number as number) ?? 0 };
 }
 
@@ -197,6 +200,7 @@ export async function cancelRunAds(campaignId: string, runId: string): Promise<n
     );
   }
   await db.from("campaign_ads").delete().in("id", rows.map((r) => r.id));
+  await broadcastAdActivity(campaignId);
   return rows.length;
 }
 

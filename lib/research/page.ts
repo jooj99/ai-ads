@@ -5,6 +5,8 @@ import {
   collectHtmlSignals,
   fetchStylesheets,
   fontFilesFor,
+  MAX_FONT_STYLESHEETS,
+  MAX_STYLESHEETS,
   extractLayoutSections,
   fetchHtml,
   looksInternalFont,
@@ -105,12 +107,16 @@ export async function researchPage(fc: Firecrawl | null, url: URL): Promise<Page
 
   // The site's stylesheets: always read now, for its @font-face files (and
   // for the HTML extractor below when the brand extractor left gaps).
-  const sheets = html
-    ? await fetchStylesheets(html, base).catch((error) => {
+  // Up to MAX_FONT_STYLESHEETS for fonts (a site's @font-face rules can sit
+  // deep in a long list); colors and logos still read only the first few.
+  const fontSheets = html
+    ? await fetchStylesheets(html, base, MAX_FONT_STYLESHEETS).catch((error) => {
         console.error("[research] stylesheet fetch failed", error);
         return [];
       })
     : [];
+  // Colors and logos read the first few, as before (more CSS adds noise there).
+  const sheets = fontSheets.slice(0, MAX_STYLESHEETS);
 
   let signals: HtmlSignals | null = null;
   if (html && (!read || brandGaps(read).length > 0)) {
@@ -155,7 +161,7 @@ export async function researchPage(fc: Firecrawl | null, url: URL): Promise<Page
   }
   // Attach the site's own font files, so previews (and ads) can use the real
   // face even when Google Fonts doesn't have it.
-  if (html) fonts = fontFilesFor(fonts, html, base, sheets);
+  if (html) fonts = fontFilesFor(fonts, html, base, fontSheets);
 
   return {
     source: read ? "firecrawl" : "html",

@@ -54,7 +54,16 @@ export type BrandColor = { hex: string; role: string };
  * `source` is where the site serves it; once research copies it into our
  * storage, `url` is where we serve it (`/api/campaigns/<id>/fonts/<file>`).
  */
-export type FontFile = { weight: number; style: "normal" | "italic"; source: string; url?: string };
+export type FontFile = {
+  weight: number;
+  style: "normal" | "italic";
+  source: string;
+  url?: string;
+  /** The stylesheet that declared it: browsers send it as the Referer, and some CDNs require that. */
+  referer?: string;
+  /** The same face in the other formats the site lists (woff, ttf…), tried if `source` fails. */
+  alternates?: string[];
+};
 
 export type BrandFont = {
   family: string;

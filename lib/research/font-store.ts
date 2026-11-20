@@ -5,12 +5,12 @@ import { createHash } from "node:crypto";
 import { supabase } from "@/lib/supabase/server";
 
 import type { BrandFont, FontFile } from "./types";
+import { assetHeaders } from "./html-signals";
 import { isPublicHttpUrl } from "./url";
 
 export const FONT_BUCKET = "brand-fonts";
 
 const MAX_FONT_BYTES = 2 * 1024 * 1024;
-const UA = "Mozilla/5.0 (compatible; PloyAdsResearch/1.0)";
 
 /** Font formats by their first bytes; anything else (HTML error pages, EOT) is rejected. */
 const SIGNATURES: { magic: string; ext: string; type: string }[] = [
@@ -55,19 +55,10 @@ async function storeOne(
   siteUrl: string,
 ): Promise<FontFile | null> {
   if (file.url) return file; // already stored by an earlier run
-  if (!isPublicHttpUrl(file.source)) return null;
   try {
-    const res = await fetch(file.source, {
-      // Some CDNs only serve fonts to their own pages.
-      headers: { "user-agent": UA, referer: siteUrl, origin: new URL(siteUrl).origin },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const bytes = Buffer.from(await res.arrayBuffer());
-    if (bytes.length === 0 || bytes.length > MAX_FONT_BYTES) throw new Error(`size ${bytes.length}`);
-    const head = bytes.subarray(0, 4).toString("latin1");
-    const kind = SIGNATURES.find((s) => s.magic === head);
-    if (!kind) throw new Error("not a font file");
+    const got = await download(file, siteUrl);
+    if (!got) return null;
+    const { bytes, kind } = got;
 
     const hash = createHash("sha256").update(bytes).digest("hex").slice(0, 12);
     const slug = family.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "font";
@@ -81,6 +72,48 @@ async function storeOne(
     console.error(`[research] couldn't store font file for ${family}`, file.source, error);
     return null;
   }
+}
+
+/**
+ * Downloads a font file like the site's own page would: browser headers,
+ * with the stylesheet that declared it as the Referer (as browsers send),
+ * then the page itself. Tries the declared file, then the same face in the
+ * other formats the site lists. Returns null (and says why) when every try
+ * fails, e.g. when a brand blocks downloads of its licensed font.
+ */
+async function download(file: FontFile, siteUrl: string): Promise<{ bytes: Buffer; kind: (typeof SIGNATURES)[number] } | null> {
+  const urls = [file.source, ...(file.alternates ?? [])].filter(isPublicHttpUrl);
+  const referers = [...new Set([file.referer, siteUrl].filter((r): r is string => Boolean(r)))];
+  const failures: string[] = [];
+  for (const url of urls) {
+    for (const referer of referers) {
+      try {
+        const res = await fetch(url, { headers: assetHeaders("font", url, referer), signal: AbortSignal.timeout(10_000) });
+        if (!res.ok) {
+          failures.push(`HTTP ${res.status}`);
+          continue;
+        }
+        const bytes = Buffer.from(await res.arrayBuffer());
+        if (bytes.length === 0 || bytes.length > MAX_FONT_BYTES) {
+          failures.push(`size ${bytes.length}`);
+          continue;
+        }
+        const kind = SIGNATURES.find((s) => s.magic === bytes.subarray(0, 4).toString("latin1"));
+        if (!kind) {
+          failures.push("not a font file");
+          continue;
+        }
+        return { bytes, kind };
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : "fetch failed");
+      }
+    }
+  }
+  const blocked = failures.length > 0 && failures.every((f) => f === "HTTP 403" || f === "HTTP 401");
+  console.warn(
+    `[research] ${blocked ? "the site blocks downloads of" : "couldn't download"} font file ${file.source} (${[...new Set(failures)].join(", ")})`,
+  );
+  return null;
 }
 
 /** Deletes a campaign's stored font files (when the campaign is deleted). */

@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import type { CampaignStatus, CampaignSummary } from "@/lib/campaigns";
-import { CAMPAIGNS_TOPIC, EVENTS, type CampaignChange } from "@/lib/realtime";
+import { CAMPAIGNS_TOPIC, EVENTS, type AdActivity, type CampaignChange } from "@/lib/realtime";
 import { browserSupabase } from "@/lib/supabase/browser";
 
 const STATUS_LABEL: Record<CampaignStatus, string> = {
@@ -27,13 +27,17 @@ const REFRESH_EVERY_MS = 1_000;
 /**
  * The campaign cards, updated live over Supabase Realtime: a running
  * campaign's status, current step, name and logo change in place as research
- * broadcasts them. New campaigns and finished runs trigger a server re-read
- * (for product counts and anything not in the broadcast).
+ * broadcasts them, and so does the count of ads being made or edited. New
+ * campaigns and finished runs trigger a server re-read.
  */
 export function LiveCampaignGrid({ campaigns }: { campaigns: CampaignSummary[] }) {
   const router = useRouter();
   const [changes, setChanges] = useState<Record<string, CampaignChange>>({});
+  // Ads in progress per campaign, from their own broadcasts (kept apart so
+  // they never overwrite a research change, and vice versa).
+  const [adChanges, setAdChanges] = useState<Record<string, { ads: AdActivity; at: string }>>({});
   const lastRefresh = useRef(0);
+  const subscribedBefore = useRef(false);
   // Ids already loaded; a broadcast about any other id means a new campaign.
   const known = useRef(new Set<string>());
   useEffect(() => {
@@ -57,6 +61,15 @@ export function LiveCampaignGrid({ campaigns }: { campaigns: CampaignSummary[] }
       .channel(CAMPAIGNS_TOPIC)
       .on("broadcast", { event: EVENTS.changed }, ({ payload }) => {
         const change = payload as CampaignChange;
+        if (change.ads) {
+          const ads = change.ads;
+          setAdChanges((current) =>
+            current[change.id] && current[change.id].at >= change.at
+              ? current
+              : { ...current, [change.id]: { ads, at: change.at } },
+          );
+        }
+        if (!change.status) return; // an ad-activity broadcast only
         // Broadcasts can arrive out of order; keep the newest per campaign.
         setChanges((current) =>
           current[change.id] && current[change.id].at >= change.at
@@ -65,7 +78,13 @@ export function LiveCampaignGrid({ campaigns }: { campaigns: CampaignSummary[] }
         );
         if (!known.current.has(change.id) || change.status !== "researching") refreshSoon();
       })
-      .subscribe();
+      .subscribe((state) => {
+        // Subscribed again after being away (this page stays alive, without
+        // its subscription, while you're on a campaign): re-read what was missed.
+        if (state !== "SUBSCRIBED") return;
+        if (subscribedBefore.current) refreshSoon();
+        subscribedBefore.current = true;
+      });
     return () => {
       if (pending) clearTimeout(pending);
       void client.removeChannel(channel);
@@ -75,9 +94,15 @@ export function LiveCampaignGrid({ campaigns }: { campaigns: CampaignSummary[] }
   // A broadcast wins over the loaded row only if it's newer.
   const shown = campaigns.map((c) => {
     const change = changes[c.id];
-    if (!change || change.at <= c.updatedAt) return c;
+    // Ad counts: a broadcast only beats the server's count if it came later.
+    // (This page is kept alive, unsubscribed, while you're on a campaign, so
+    // an old "Making 3 ads" broadcast must not outlive the ads it was about.)
+    const live = adChanges[c.id];
+    const ads = live && live.at > c.adsAt ? live.ads : c.ads;
+    if (!change?.status || change.at <= c.updatedAt) return { ...c, ads };
     return {
       ...c,
+      ads,
       status: change.status,
       name: change.name ?? c.name,
       logo: change.logo ?? c.logo,
@@ -105,8 +130,6 @@ export function LiveCampaignGrid({ campaigns }: { campaigns: CampaignSummary[] }
     );
   }
 
-  const dates = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
-
   return (
     <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
       {shown.map((c) => (
@@ -129,19 +152,25 @@ export function LiveCampaignGrid({ campaigns }: { campaigns: CampaignSummary[] }
               </div>
             </div>
             <div className="mt-auto flex items-center justify-between gap-2">
-              <Badge
-                variant={c.status === "ready" ? "secondary" : "outline"}
-                className="max-w-[65%] gap-1.5"
-              >
-                {c.status === "researching" && <Loader2Icon className="size-3 animate-spin" />}
-                <span className="truncate">
-                  {c.status === "researching" && c.step ? c.step : STATUS_LABEL[c.status]}
-                </span>
-              </Badge>
+              {(() => {
+                // Research comes first; after it, ads being made or edited.
+                const working = c.status !== "researching" && c.ads.making + c.ads.editing > 0;
+                const busy = c.status === "researching" || working;
+                return (
+                  <Badge variant={busy || c.status !== "ready" ? "outline" : "secondary"} className="max-w-[75%] gap-1.5">
+                    {busy && <Loader2Icon className="size-3 animate-spin" />}
+                    <span className="truncate">
+                      {working
+                        ? adsLabel(c.ads)
+                        : c.status === "researching" && c.step
+                          ? c.step
+                          : STATUS_LABEL[c.status]}
+                    </span>
+                  </Badge>
+                );
+              })()}
               <span className="shrink-0 text-xs text-muted-foreground">
-                {c.productCount > 0 &&
-                  `${c.productCount} ${c.offering === "services" ? "services" : "products"} · `}
-                {dates.format(new Date(c.createdAt))}
+                {c.ads.total ? `${c.ads.total} ad${c.ads.total === 1 ? "" : "s"}` : "No ads yet"}
               </span>
             </div>
           </Link>
@@ -156,4 +185,12 @@ export function LiveCampaignGrid({ campaigns }: { campaigns: CampaignSummary[] }
       ))}
     </ul>
   );
+}
+
+/** "Making 2 ads…", "Editing an ad…", or "Making 1 ad · editing 1…". */
+function adsLabel({ making, editing }: AdActivity) {
+  const make = `${making} ad${making === 1 ? "" : "s"}`;
+  if (making && editing) return `Making ${make} · editing ${editing}…`;
+  if (making) return `Making ${make}…`;
+  return `Editing ${editing === 1 ? "an ad" : `${editing} ads`}…`;
 }

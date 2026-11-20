@@ -7,10 +7,12 @@ import { adoptBrandName } from "@/lib/campaigns";
 import {
   findSiteProducts,
   findSiteServices,
+  notItemPhotos,
   photosForPicks,
   pickerCandidates,
   pickPhotoExclusions,
   pickSiteLinks,
+  readProductPage,
   sharedPhotoCleanup,
 } from "./catalog";
 import { storeFontFiles } from "./font-store";
@@ -24,7 +26,8 @@ import type { LinkPicks } from "./links";
 import { classifyOffering as classifyOfferingCall } from "./offering";
 import { researchPage, type PageResearch } from "./page";
 import { detectShopify, fetchShopifyCatalog, type ShopifyStore } from "./shopify";
-import type { CatalogEntry, ResearchSession } from "./state";
+import { pageKey, type CatalogEntry, type ResearchSession } from "./state";
+import { isPublicHttpUrl } from "./url";
 import { MAX_PRODUCT_TYPES, type Offering, type Product, type ProductType } from "./types";
 
 /**
@@ -281,6 +284,44 @@ export async function loadCatalog(
   };
 }
 
+/**
+ * Adds the product (or service) on one page the user linked to, with that
+ * page's own photos, so an ad can be made about it. A link to an item
+ * already in the catalog returns that item (and fills in photos it lacked).
+ * The page can be on another site (a marketplace listing, say); on the
+ * brand's own site, its logo and share image are never taken as the photo.
+ */
+export async function addProductFromLink(
+  { session, fc, progress }: StepContext,
+  { url }: { url: string },
+): Promise<StepResult> {
+  if (!isPublicHttpUrl(url)) return { ok: false, summary: "That isn't a public web link" };
+  const key = pageKey(url);
+  const existing = session.catalog.find((e) => e.id === url || pageKey(e.url) === key);
+  if (existing?.images.length) {
+    return {
+      ok: true,
+      summary: `"${existing.title}" is already in the catalog`,
+      data: { id: existing.id, title: existing.title, photos: existing.images.length, alreadyListed: true },
+    };
+  }
+  progress?.("Reading the linked page");
+  const site = await session.getSnapshot<PageResearch>("page", session.kit.sourceUrl).catch(() => null);
+  const sameSite = pageKey(url).split("/")[0] === pageKey(session.kit.sourceUrl).split("/")[0];
+  const item = await readProductPage(fc, new URL(url), site && sameSite ? notItemPhotos(site) : new Set());
+  if (!item) {
+    return { ok: false, summary: "Couldn't find a product with a photo on that page" };
+  }
+  const product = existing ? { ...item, id: existing.id } : item;
+  session.mergeProducts([product], "add");
+  await Promise.all([session.saveCatalog(), session.saveKit()]);
+  return {
+    ok: true,
+    summary: `${existing ? "Found photos for" : "Added"} "${product.title}" with ${product.images.length} photo${product.images.length === 1 ? "" : "s"}`,
+    data: { id: product.id, title: product.title, price: product.price, photos: product.images.length },
+  };
+}
+
 /** Removes items from the catalog (the agent's or user's decision). */
 export async function removeProducts({ session }: StepContext, { ids }: { ids: string[] }): Promise<StepResult> {
   const removed = session.removeProducts(ids);
@@ -503,11 +544,10 @@ export function getCatalog(
   { session }: StepContext,
   { typeName, query, limit = 60 }: { typeName?: string; query?: string; limit?: number } = {},
 ): StepResult {
-  const q = query?.toLowerCase();
-  const items = session.catalog
-    .filter((e) => !typeName || e.typeName === typeName)
-    .filter((e) => !q || `${e.title} ${e.productType ?? ""} ${(e.tags ?? []).join(" ")}`.toLowerCase().includes(q))
-    .slice(0, Math.min(limit, 200));
+  const items = searchCatalog(
+    session.catalog.filter((e) => !typeName || e.typeName === typeName),
+    query,
+  ).slice(0, Math.min(limit, 200));
   return {
     ok: true,
     summary: `${items.length} of ${session.catalog.length} items`,
@@ -524,6 +564,37 @@ export function getCatalog(
       })),
     },
   };
+}
+
+/**
+ * Catalog items matching how the user described one ("the blue loop case",
+ * "brow lamination", or a link to its page), best match first. Words are
+ * matched loosely (a word or its stem in the title, type, tags, description
+ * or link); the title counts double. Without a query: the catalog in order.
+ */
+function searchCatalog(catalog: CatalogEntry[], query?: string): CatalogEntry[] {
+  const q = query?.trim();
+  if (!q) return catalog;
+  if (/^https?:\/\//i.test(q)) {
+    const key = pageKey(q);
+    return catalog.filter((e) => e.id === q || pageKey(e.url) === key);
+  }
+  const STOP = new Set(["the", "a", "an", "and", "our", "my", "for", "with", "of", "one", "ad", "ads", "about", "that", "this"]);
+  const stem = (w: string) => w.replace(/(ing|es|s)$/, "");
+  const words = [...new Set(q.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !STOP.has(w)).map(stem))];
+  if (!words.length) return catalog;
+  const scored = catalog.map((e) => {
+    const title = e.title.toLowerCase();
+    const rest = `${e.productType ?? ""} ${e.typeName ?? ""} ${(e.tags ?? []).join(" ")} ${e.description ?? ""} ${e.url}`.toLowerCase();
+    const score = words.reduce((sum, w) => sum + (title.includes(w) ? 2 : rest.includes(w) ? 1 : 0), 0);
+    return { e, score, inTitle: words.filter((w) => title.includes(w)).length };
+  });
+  const best = Math.max(0, ...scored.map((x) => x.score));
+  // Keep items close to the best match, so "lavender case" doesn't return every case.
+  return scored
+    .filter((x) => x.score > 0 && x.score >= best / 2)
+    .sort((a, b) => b.score - a.score || b.inTitle - a.inTitle)
+    .map((x) => x.e);
 }
 
 /** What research has done and what's missing, item by item (the skill's checklist). */

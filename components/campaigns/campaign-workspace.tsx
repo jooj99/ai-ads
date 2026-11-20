@@ -13,12 +13,13 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 import {
   addAdCommentAction,
   deleteAdAction,
   deleteAdCommentAction,
+  updateAdCommentAction,
   reviewAdCommentAction,
   listAdsAction,
   listHeadlinesAction,
@@ -161,9 +162,15 @@ export function CampaignWorkspace({
       else {
         // The agent researches as a durable run: show its opening message and
         // follow the run's stream in the chat.
-        const { opening } = (await res.json()) as { opening?: AgentUIMessage };
+        const { opening, runId: started } = (await res.json()) as { opening?: AgentUIMessage; runId?: string };
         setEdits({});
-        if (opening) setMessages((current) => (current.some((m) => m.id === opening.id) ? current : [...current, opening]));
+        const next = !opening || messages.some((m) => m.id === opening.id) ? messages : [...messages, opening];
+        setMessages(next);
+        if (started) {
+          runBase.current.set(started, next);
+          runId.current = started;
+          replayTarget.current = started;
+        }
         router.refresh();
         void resumeStream();
       }
@@ -191,27 +198,45 @@ export function CampaignWorkspace({
   // following (x-workflow-run-id) so an interrupt can cancel it, and
   // reconnects if the stream drops.
   const runId = useRef<string | null>(null);
+  // The chat as it was before each run's reply (the messages it was sent, or
+  // what was showing when we started following it). A replay restores this
+  // first, so it replaces the reply instead of adding a second copy.
+  const runBase = useRef(new Map<string, AgentUIMessage[]>());
+  // Runs whose stream reached its end here: nothing left to follow.
+  const endedRuns = useRef(new Set<string>());
+  // The run a replay follows; null means "the campaign's active run".
+  const replayTarget = useRef<string | null>(null);
   const chatApi = `/api/campaigns/${campaign.id}/chat`;
   const [transport] = useState(
     () =>
       new WorkflowChatTransport<AgentUIMessage>({
         api: chatApi,
-        onChatSendMessage: (response) => {
+        onChatSendMessage: (response, options) => {
           runId.current = response.headers.get("x-workflow-run-id");
+          if (runId.current) runBase.current.set(runId.current, [...options.messages]);
         },
+        // A replay (resumeStream) asks for the chat id, i.e. "the active run":
+        // name the exact run instead. Reconnects after a send already do.
+        prepareReconnectToStreamRequest: ({ api }) => ({
+          api:
+            replayTarget.current && api === `${chatApi}/${encodeURIComponent(campaign.id)}/stream`
+              ? `${chatApi}/${encodeURIComponent(replayTarget.current)}/stream`
+              : api,
+        }),
         onChatEnd: () => {
+          if (runId.current) {
+            endedRuns.current.add(runId.current);
+            runBase.current.delete(runId.current);
+          }
           runId.current = null;
         },
       }),
   );
-  // A run already going when the page loads (research started by Start
-  // Campaign, or a turn from before a reload): replay and follow it.
   const activeRun = Boolean(campaign.agentRunId && !campaign.agentRunId.startsWith("starting-"));
   const chat = useChat<AgentUIMessage>({
     id: campaign.id,
     messages: savedMessages,
     transport,
-    resume: activeRun,
     // When the user continues from a choice card (a tool output), send it to the agent.
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
     // The agent can change headlines and the brand kit in chat; pick those
@@ -240,6 +265,32 @@ export function CampaignWorkspace({
     clearError,
   } = chat;
 
+  // Follow a run that isn't streaming here: one already going when the page
+  // loads (research from Start Campaign, a turn from before a reload), or the
+  // one this page was following when you navigated away. With Cache
+  // Components, Next keeps this page's state while you're elsewhere but runs
+  // its effect clean-ups, and useChat's clean-up stops the stream; coming back
+  // runs the effects again. A resume replays the whole run as a new message,
+  // so the chat goes back to how it was before the run first (runBase) and
+  // the replay takes the reply's place. (useChat's own `resume` option would
+  // add the replay next to the copy already showing: every tool call twice.)
+  // It runs again when the status settles: on coming back, the page first
+  // renders the status from before it was hidden ("streaming"), then "ready".
+  const loadedRun = activeRun ? campaign.agentRunId : null;
+  const followRun = useEffectEvent(() => {
+    const run = runId.current ?? loadedRun;
+    if (!run || endedRuns.current.has(run) || status !== "ready") return;
+    const base = runBase.current.get(run);
+    if (base) setMessages(base);
+    else runBase.current.set(run, [...messages]);
+    runId.current = run;
+    replayTarget.current = run;
+    void resumeStream();
+  });
+  useEffect(() => {
+    followRun();
+  }, [loadedRun, status]);
+
   // While a run is going, reload the kit and catalog as its research and kit
   // tools finish (at most every 1.5s), so the panel fills in live.
   const toolResults = messages.at(-1)?.parts.filter(
@@ -259,8 +310,15 @@ export function CampaignWorkspace({
 
   /** Stops the run on the server (its reply so far is saved), then the stream here. */
   async function interrupt() {
-    await fetch(`${chatApi}/${runId.current ?? campaign.id}`, { method: "DELETE" }).catch(() => undefined);
+    const run = runId.current;
+    await fetch(`${chatApi}/${run ?? campaign.id}`, { method: "DELETE" }).catch(() => undefined);
     await stop();
+    // Stopped on purpose: don't replay it when the page is shown again.
+    if (run) {
+      endedRuns.current.add(run);
+      runBase.current.delete(run);
+      if (runId.current === run) runId.current = null;
+    }
     // The stop cancelled any ads that run was making; drop their placeholders.
     void syncAds();
   }
@@ -324,6 +382,26 @@ export function CampaignWorkspace({
         void syncAds();
       }
     });
+  }
+
+  /** Rewrites an open comment: shown at once, saved, and restored if the save fails. */
+  async function editComment(ad: SavedAd, comment: AdComment, body: string) {
+    setAdError(undefined);
+    const swap = (text: string) =>
+      setAds((list) =>
+        list.map((a) =>
+          a.id === ad.id
+            ? { ...a, comments: a.comments.map((c) => (c.id === comment.id ? { ...c, body: text } : c)) }
+            : a,
+        ),
+      );
+    swap(body);
+    const result = await updateAdCommentAction(campaign.id, comment.id, body);
+    if (!result.ok) {
+      swap(comment.body);
+      setAdError(result.error);
+    }
+    return result.ok;
   }
 
   /**
@@ -479,7 +557,7 @@ export function CampaignWorkspace({
           {[
             ["brand", "Brand kit"],
             ["products", kit?.offering === "services" ? "Services" : "Products"],
-            ["ads", ads.length ? `Ads · ${new Set(ads.map((a) => a.number)).size}` : "Ads"],
+            ["ads", "Ads"],
           ].map(([value, label]) => (
             <TabsTrigger
               key={value}
@@ -590,6 +668,7 @@ export function CampaignWorkspace({
                 onDeleteAd={deleteAd}
                 onAddComment={addComment}
                 onDeleteComment={(ad, c) => void deleteComment(ad, c)}
+                onEditComment={editComment}
                 onReview={reviewComment}
                 onApply={(ad, count) =>
                   void send(
@@ -635,6 +714,7 @@ function AdsPanel({
   onDeleteAd,
   onAddComment,
   onDeleteComment,
+  onEditComment,
   onApply,
   onReview,
 }: {
@@ -646,6 +726,7 @@ function AdsPanel({
   onDeleteAd: (ad: SavedAd, scope: "version" | "ad") => void;
   onAddComment: (ad: SavedAd, comment: { x: number; y: number; body: string }) => Promise<boolean>;
   onDeleteComment: (ad: SavedAd, comment: AdComment) => void;
+  onEditComment: (ad: SavedAd, comment: AdComment, body: string) => Promise<boolean>;
   onApply: (ad: SavedAd, count: number) => void;
   onReview: (comment: AdComment, resolved: boolean) => Promise<void>;
 }) {
@@ -660,6 +741,7 @@ function AdsPanel({
         onDelete={onDeleteAd}
         onAddComment={onAddComment}
         onDeleteComment={onDeleteComment}
+        onEditComment={onEditComment}
         onApply={onApply}
         onReview={onReview}
       />

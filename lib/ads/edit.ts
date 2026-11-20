@@ -16,6 +16,7 @@ import {
   throwIfStopped,
   type FalImage,
 } from "@/lib/ads/render";
+import { broadcastAdActivity } from "@/lib/ads/activity";
 import { checkEdit, type EditCheck } from "@/lib/ads/retention";
 import { summarizeEdit } from "@/lib/ads/summarize";
 import { AD_BUCKET } from "@/lib/ads/store";
@@ -85,6 +86,7 @@ Rules for every edit:
 - Image 2, when attached, is image 1 with numbered pink circles marking where each requested change applies. Change only what each request asks for, at its marker. The circles are only a guide: never draw circles, numbers or markers in the result.
 - Images listed as references from the user are things to bring into the ad exactly as their note says (an object to add, a style or background to match). Use them only for the requested change.
 - Images listed as the brand logo, brand color swatches or product photos come from the brand kit. Use them only where a requested change calls for them: reproduce the logo exactly as in its image (never invent or restyle it), use swatch colors exactly (match the swatch, not a similar shade), and keep products matching their photos. Never draw the swatches themselves.
+- Never add invented products, devices, app screens, dashboards, charts or data. Anything the brand sells or shows must match image 1 or the attached reference photos.
 - Every requested change must be clearly visible in the result. Returning image 1 unchanged, or skipping a marker, is a failure.
 - Keep the headline and call-to-action wording exactly as in image 1, spelled exactly, unless a change explicitly asks for new wording.
 - Return the full ad at the same 9:16 size, not a crop.`;
@@ -365,6 +367,9 @@ Change only what is requested. Don't draw the markers.`;
     console.error("[ads] edit failed", reason);
     await failAdRow(adId, reason);
     return { ok: false, summary: `Couldn't edit the ad for ${label}: ${reason}` };
+  } finally {
+    // Done either way (ready, failed, unchanged or stopped): update the Campaigns list.
+    await broadcastAdActivity(campaignId);
   }
 }
 
