@@ -41,7 +41,8 @@ Next.js 16, the AI SDK and AI Elements change faster than training data. Read `n
 
 - `npm run dev`: local dev server. **Don't run `npm run build` while it's running**: the build clears `.next`, including in-flight workflow runs (`.next/workflow-data`). Build in a separate worktree instead.
 - `npm run build`: production build (run before pushing). `npm run lint`: ESLint.
-- `npm run demo-user`: create or reset the demo login from `DEMO_USER_EMAIL` / `DEMO_USER_PASSWORD`.
+- **Local dev uses its own Supabase in Docker**, never production: `npm run db:start` / `db:stop` (Docker Desktop must be running), `npm run db:env` (writes its URL and keys to `.env.development.local`, then restart dev), `npm run db:reset` (wipe and re-apply migrations). fal and the model provider can't reach 127.0.0.1, so local images go through `lib/reachable.ts`.
+- `npm run demo-user`: create or reset the demo login in the local Supabase (`npm run demo-user:prod` for production), from `DEMO_USER_EMAIL` / `DEMO_USER_PASSWORD`.
 - Migrations live in `supabase/migrations/`; apply to production with `npx supabase@2 db push --db-url "$POSTGRES_URL_NON_POOLING"`.
 - Needs `FIRECRAWL_API_KEY`, `FALAI_KEY` and AI Gateway access (`vercel env pull .env.local`; the OIDC token expires after ~12h).
 
