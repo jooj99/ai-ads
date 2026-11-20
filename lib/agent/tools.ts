@@ -75,7 +75,7 @@ export const proposeHeadlinesSpec = tool({
  * those threads still load.
  */
 export const adIdea = z.object({
-  title: z.string().describe('A few words naming the idea, e.g. "Coffee-shop dangle" or "Bold claim on brand blue".'),
+  title: z.string().describe('A few words naming the idea, e.g. "Commute essential" or "Bold claim on brand blue".'),
   style: z
     .enum(["scene", "minimal"])
     .optional()
