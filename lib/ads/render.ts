@@ -3,7 +3,8 @@ import "server-only";
 import { createFalClient } from "@fal-ai/client";
 
 import { broadcastAdActivity } from "@/lib/ads/activity";
-import { AD_BUCKET } from "@/lib/ads/store";
+import { AD_BUCKET, previewPath } from "@/lib/ads/store";
+import { asPng, previewWebp, WEBP } from "@/lib/ads/webp";
 import type { BrandKit, CatalogItem } from "@/lib/research/types";
 import { isPublicHttpUrl } from "@/lib/research/url";
 import { supabase } from "@/lib/supabase/server";
@@ -194,7 +195,11 @@ export async function falImage(
   }
 }
 
-/** Copies an image into the `ads` bucket and marks its row ready (with any extra columns). */
+/**
+ * Copies an image into the `ads` bucket as the ad's full PNG plus its small
+ * WebP preview (what the app shows), and marks its row ready (with any extra
+ * columns). A preview that fails to store is made later, when first asked for.
+ */
 export async function storeAdImage(
   campaignId: string,
   adId: string,
@@ -204,8 +209,15 @@ export async function storeAdImage(
   const db = supabase();
   await throwIfStopped(adId);
   const path = `${campaignId}/${adId}.png`;
-  const upload = await uploadWithRetry(path, image.bytes);
+  const png = await asPng(image.bytes);
+  const upload = await uploadWithRetry(path, png);
   if (upload.error) throw new Error(`storing the image failed: ${upload.error.message}`);
+  try {
+    const preview = await uploadWithRetry(previewPath(path), await previewWebp(png), WEBP);
+    if (preview.error) console.warn(`[ads] storing the preview failed (${preview.error.message})`);
+  } catch (error) {
+    console.warn("[ads] making the preview failed", error);
+  }
   // Only a row still being made becomes ready; a stopped one is gone by now.
   const { data: updated } = await db
     .from("campaign_ads")
@@ -221,7 +233,7 @@ export async function storeAdImage(
     .eq("status", "generating")
     .select("id");
   if (!updated?.length) {
-    await db.storage.from(AD_BUCKET).remove([path]);
+    await db.storage.from(AD_BUCKET).remove([path, previewPath(path)]);
     const { data: row } = await db.from("campaign_ads").select("status, error").eq("id", adId).maybeSingle();
     if (row?.status === "failed") throw new AdExpiredError(row.error ?? "it was stopped");
     throw new AdStoppedError();
@@ -236,14 +248,14 @@ export async function storeAdImage(
  * storage hiccup (Supabase's 520s) gets two more tries before it counts as
  * a failure.
  */
-export async function uploadWithRetry(path: string, bytes: Uint8Array) {
+export async function uploadWithRetry(path: string, bytes: Uint8Array, contentType = "image/png") {
   const bucket = supabase().storage.from(AD_BUCKET);
-  let upload = await bucket.upload(path, bytes, { contentType: "image/png", upsert: true });
+  let upload = await bucket.upload(path, bytes, { contentType, upsert: true });
   for (const wait of [1_500, 5_000]) {
     if (!upload.error) break;
     console.warn(`[ads] storing the image failed (${upload.error.message}); trying again`);
     await new Promise((r) => setTimeout(r, wait));
-    upload = await bucket.upload(path, bytes, { contentType: "image/png", upsert: true });
+    upload = await bucket.upload(path, bytes, { contentType, upsert: true });
   }
   return upload;
 }
