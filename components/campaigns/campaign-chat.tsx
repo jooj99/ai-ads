@@ -40,6 +40,7 @@ import { HeadlineChoice, type ChoiceSubmission } from "@/components/campaigns/he
 import { Button } from "@/components/ui/button";
 import { InputGroupAddon } from "@/components/ui/input-group";
 import { IdeaChoice } from "@/components/campaigns/idea-choice";
+import { adPreviewUrl } from "@/lib/ads/preview-url";
 import { RESEARCH_TOOL_PARTS, type AdIdea, type AgentUIMessage } from "@/lib/agent/tools";
 import type { SavedAd, SavedHeadline } from "@/lib/campaigns";
 import type { CatalogItem } from "@/lib/research/types";
@@ -500,7 +501,7 @@ function AdRow({ part, live, retry, ads }: { part: AdPart; live: boolean; retry:
           <a href={ad.url} target="_blank" rel="noreferrer" className="shrink-0" title="Open full size">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={ad.url}
+              src={adPreviewUrl(ad.url)}
               alt={`Ad: ${ad.headline}`}
               className="aspect-[9/16] w-16 rounded-md object-cover ring-1 ring-foreground/10"
             />

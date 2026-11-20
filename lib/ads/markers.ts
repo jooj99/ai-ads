@@ -119,8 +119,9 @@ export async function drawMarkers(image: Uint8Array, markers: Marker[]): Promise
     })
     .join("\n");
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${shapes}</svg>`;
+  // WebP: fal downloads it, and it's only a guide (about 1 MB instead of 7).
   return sharp(image)
     .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
-    .png()
+    .webp({ quality: 88 })
     .toBuffer();
 }

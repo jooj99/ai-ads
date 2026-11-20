@@ -8,6 +8,7 @@ import { z } from "zod";
 
 import { describeRegion, drawMarkers } from "@/lib/ads/markers";
 import { falImage, type FalImage } from "@/lib/ads/render";
+import { WEBP, workWebp } from "@/lib/ads/webp";
 import { AD_BUCKET } from "@/lib/ads/store";
 import { supabase } from "@/lib/supabase/server";
 import { GATEWAY_CACHING } from "@/lib/ai-caching";
@@ -219,13 +220,17 @@ export async function fixAd(input: {
   const { issue } = input;
   const bucket = supabase().storage.from(AD_BUCKET);
   const token = randomUUID();
-  const draftPath = `${input.campaignId}/check-${input.adId}-${token}.png`;
-  const cropPath = `${input.campaignId}/marks-check-${input.adId}-${token}.png`;
+  // WebP, not PNG: fal downloads both, about 1 MB each instead of 6–7 MB.
+  const draftPath = `${input.campaignId}/check-${input.adId}-${token}.webp`;
+  const cropPath = `${input.campaignId}/marks-check-${input.adId}-${token}.webp`;
   try {
-    const crop = await drawMarkers(input.draft.bytes, [{ x: issue.x, y: issue.y, box: issue.box }]);
+    const [draft, crop] = await Promise.all([
+      workWebp(input.draft.bytes),
+      drawMarkers(input.draft.bytes, [{ x: issue.x, y: issue.y, box: issue.box }]),
+    ]);
     const [a, b] = await Promise.all([
-      bucket.upload(draftPath, input.draft.bytes, { contentType: "image/png", upsert: true }),
-      bucket.upload(cropPath, crop, { contentType: "image/png", upsert: true }),
+      bucket.upload(draftPath, draft, { contentType: WEBP, upsert: true }),
+      bucket.upload(cropPath, crop, { contentType: WEBP, upsert: true }),
     ]);
     if (a.error || b.error) throw a.error ?? b.error;
     const signed = await bucket.createSignedUrls([draftPath, cropPath], 15 * 60);

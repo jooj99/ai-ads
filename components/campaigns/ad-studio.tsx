@@ -53,6 +53,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Textarea } from "@/components/ui/textarea";
 import { thumbnail } from "@/components/research/brand-kit-view";
 import { sameCopy } from "@/lib/agent/tools";
+import { adPreviewUrl } from "@/lib/ads/preview-url";
 import type { AdComment, SavedAd } from "@/lib/campaigns";
 import type { CatalogItem } from "@/lib/research/types";
 import { cn } from "@/lib/utils";
@@ -368,7 +369,7 @@ function AdRail({
                 {top.imageUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
-                    src={top.imageUrl}
+                    src={adPreviewUrl(top.imageUrl)}
                     alt=""
                     className="size-full object-cover"
                   />
@@ -539,7 +540,7 @@ function AdCanvas({
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src={ad.imageUrl}
+            src={adPreviewUrl(ad.imageUrl)}
             alt={`Ad ${number}: ${ad.headline}`}
             width={ad.width ?? 1152}
             height={ad.height ?? 2048}

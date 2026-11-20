@@ -24,6 +24,7 @@ import {
 import { setAdStage } from "@/lib/ads/stage";
 import { AD_BUCKET, adImageUrl } from "@/lib/ads/store";
 import { describeIssues, fixAd, verifyAd, type AdIssue } from "@/lib/ads/verify";
+import { WEBP, workWebp } from "@/lib/ads/webp";
 import { getCampaignResearch } from "@/lib/campaigns";
 import { supabase } from "@/lib/supabase/server";
 import { resolveReferences, type AdReference } from "@/lib/uploads";
@@ -47,7 +48,9 @@ import type { IdeaDirection } from "@/lib/agent/tools";
  *
  * Never throws: failures come back as `{ ok: false, summary }` for the chat,
  * and the row is marked "failed" with the reason. Drafts and repairs live in
- * our bucket as `<campaign>/work-<ad>-…png` until the finish.
+ * our bucket as `<campaign>/work-<ad>-…webp` (about 1 MB instead of a 6 MB
+ * PNG, since each phase and fal download them again) until the finish, which
+ * stores the chosen one as the ad's PNG.
  */
 
 export type GenerateAdInput = {
@@ -103,7 +106,7 @@ export function generateAd(campaignId: string, input: GenerateAdInput, ctx: Ctx 
 const label = (headline: string) => `“${headline}”`;
 /** A draft (round 0) or a repair edit (round r, edit e) of an ad being made. */
 const workPath = (job: AdJob, round: number, edit?: number) =>
-  `${job.campaignId}/work-${job.adId}-${round}${edit ? `-${edit}` : ""}.png`;
+  `${job.campaignId}/work-${job.adId}-${round}${edit ? `-${edit}` : ""}.webp`;
 
 export async function startAd(
   campaignId: string,
@@ -225,7 +228,7 @@ export async function startAd(
     await setAdStage(campaignId, adId, "Drafting the image");
     const draft = await falImage(brief, adId);
     const path = workPath(job, 0);
-    const saved = await uploadWithRetry(path, draft.bytes);
+    const saved = await uploadWithRetry(path, await workWebp(draft.bytes), WEBP);
     if (saved.error) throw new Error(`storing the image failed: ${saved.error.message}`);
     return { job, draftPath: path };
   } catch (error) {
@@ -237,7 +240,7 @@ export async function startAd(
 export async function checkDraft(job: AdJob, path: string): Promise<AdCheck> {
   const image = await readWork(path);
   if (!image) return { checked: false, issues: [] };
-  const first = path.endsWith(`work-${job.adId}-0.png`);
+  const first = path.endsWith(`work-${job.adId}-0.webp`);
   await setAdStage(
     job.campaignId,
     job.adId,
@@ -288,7 +291,7 @@ export async function repairDraft(
       cta: job.cta,
     });
     const out = workPath(job, round, edit);
-    const saved = await uploadWithRetry(out, repaired.bytes);
+    const saved = await uploadWithRetry(out, await workWebp(repaired.bytes), WEBP);
     return saved.error ? {} : { path: out };
   } catch (error) {
     if (error instanceof AdStoppedError) return { result: stopped(job) };

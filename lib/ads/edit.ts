@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 
 import { adResult, type AdToolResult } from "@/lib/ads/generate";
 import { drawMarkers } from "@/lib/ads/markers";
+import { WEBP, workWebp } from "@/lib/ads/webp";
 import {
   AdStoppedError,
   chooseProducts,
@@ -128,7 +129,23 @@ function better<T extends { check: EditCheck }>(a: T, b: T): T {
 export async function editAd(
   campaignId: string,
   input: EditAdInput,
-  { toolCallId, runId }: { toolCallId?: string; runId?: string } = {},
+  ctx: { toolCallId?: string; runId?: string } = {},
+): Promise<AdToolResult> {
+  // The WebP copies fal reads (the base and the pinned copy) are deleted
+  // however the edit ends.
+  const temp: string[] = [];
+  try {
+    return await runEdit(campaignId, input, ctx, temp);
+  } finally {
+    if (temp.length) await supabase().storage.from(AD_BUCKET).remove(temp).catch(() => undefined);
+  }
+}
+
+async function runEdit(
+  campaignId: string,
+  input: EditAdInput,
+  { toolCallId, runId }: { toolCallId?: string; runId?: string },
+  temp: string[],
 ): Promise<AdToolResult> {
   const db = supabase();
   const { data: parent } = await db
@@ -165,14 +182,22 @@ export async function editAd(
   const original = await bucket.download(parent.image_path);
   if (original.error || !original.data) return { ok: false, summary: `Couldn't edit the ad for ${label}: its image is missing.` };
   const before = new Uint8Array(await original.data.arrayBuffer());
-  const imagePaths = [parent.image_path];
+  // fal reads a WebP copy of the base (about 1 MB instead of the 4 MB PNG,
+  // and a retry reads it again); the ad's inputs still record the PNG.
+  const token = toolCallId ?? randomUUID();
+  const basePath = `${campaignId}/edit-${token}.webp`;
+  temp.push(basePath);
+  const base = await bucket.upload(basePath, await workWebp(before), { contentType: WEBP, upsert: true });
+  if (base.error) return { ok: false, summary: `Couldn't edit the ad for ${label}: preparing its image failed.` };
+  const imagePaths = [basePath];
   // With comments: a copy with a numbered pin exactly where each was placed.
   // A pin the model copies into the result is caught and removed afterwards
   // (the leftover-mark check below).
   if (pins.length) {
     const marked = await drawMarkers(before, pins);
-    const markPath = `${campaignId}/marks-${toolCallId ?? randomUUID()}.png`;
-    const upload = await bucket.upload(markPath, marked, { contentType: "image/png", upsert: true });
+    const markPath = `${campaignId}/marks-${token}.webp`;
+    temp.push(markPath);
+    const upload = await bucket.upload(markPath, marked, { contentType: WEBP, upsert: true });
     if (upload.error) return { ok: false, summary: `Couldn't edit the ad for ${label}: preparing the comments failed.` };
     imagePaths.push(markPath);
   }
@@ -189,7 +214,9 @@ export async function editAd(
   }
   const kitImages = await brandKitImages(campaignId, input.include);
   const imageUrls = [...adUrls];
-  const recordedInputs = imagePaths.map((p) => `${AD_BUCKET}/${p}`);
+  // Recorded by storage path: the ad it edits (its PNG) and, with pins, the
+  // pinned copy (a temporary file, deleted when the edit ends).
+  const recordedInputs = [parent.image_path, ...imagePaths.slice(1)].map((p) => `${AD_BUCKET}/${p}`);
   const add = (img: { url: string; recorded: string }) => {
     if (imageUrls.length >= MAX_IMAGES) return undefined;
     recordedInputs.push(img.recorded);
