@@ -5,6 +5,7 @@ import { start } from "workflow/api";
 import { agentToolSpecs, type AgentUIMessage } from "@/lib/agent/tools";
 import { getCampaign, getChat, saveChat } from "@/lib/campaigns";
 import { supabase } from "@/lib/supabase/server";
+import { uploadName } from "@/lib/uploads";
 import { agentTurn } from "@/workflows/agent";
 import { unauthorized } from "@/lib/supabase/auth";
 
@@ -41,7 +42,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/campaigns/[id]/
     if (!(error instanceof TypeValidationError)) console.error("[agent] bad request", error);
     return Response.json({ error: "That message couldn't be read." }, { status: 400 });
   }
-  messages = closeUnansweredChoices(messages);
+  messages = closeUnansweredChoices(onlyOwnUploads(messages, id));
 
   // A tab that's behind (it loaded before another tab's reply was saved, or a
   // duplicate first send) would overwrite the newer thread; turn it away.
@@ -122,4 +123,23 @@ function closeUnansweredChoices(messages: AgentUIMessage[]): AgentUIMessage[] {
       ),
     };
   });
+}
+
+/**
+ * Attached images must be this campaign's own uploads (stored first by
+ * POST /api/campaigns/<id>/uploads, referenced by our URL). Anything else,
+ * like inline base64 or an outside URL, is dropped so threads stay small and
+ * the agent only ever sees images the user put here.
+ */
+function onlyOwnUploads(messages: AgentUIMessage[], campaignId: string): AgentUIMessage[] {
+  return messages.map((m) =>
+    m.role === "user" && m.parts.some((p) => p.type === "file")
+      ? {
+          ...m,
+          parts: m.parts.filter(
+            (p) => p.type !== "file" || (p.mediaType.startsWith("image/") && uploadName(campaignId, p.url) !== null),
+          ),
+        }
+      : m,
+  );
 }

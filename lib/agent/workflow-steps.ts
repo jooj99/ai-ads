@@ -8,6 +8,8 @@ import type { AgentUIMessage } from "@/lib/agent/tools";
 import { getCampaign, getCampaignResearch, getChat, saveChat } from "@/lib/campaigns";
 import { CAMPAIGNS_TOPIC, campaignTopic, EVENTS, type CampaignChange } from "@/lib/realtime";
 import { supabase } from "@/lib/supabase/server";
+import { signUploads, uploadName } from "@/lib/uploads";
+import { logoImage } from "@/lib/ads/brand-assets";
 
 /**
  * The durable agent's steps (see workflows/agent.ts). Each function marked
@@ -43,6 +45,69 @@ export async function loadAgentSetup(
   return { model: AGENT_MODEL, instructions: await buildInstructions(campaignId, mode, submitted) };
 }
 
+/** How many of the latest attached images the model sees; older ones are named but not re-sent. */
+const MAX_VISIBLE_UPLOADS = 6;
+
+/**
+ * Gets a thread ready for the model: images the user attached point at our
+ * private route, which the model provider can't fetch, so each becomes a
+ * one-hour signed URL, followed by a line naming its reference id (what the
+ * agent passes to generateAd / editAd to use it in an ad). Only the latest
+ * MAX_VISIBLE_UPLOADS are sent as images; older ones stay as their names.
+ * The saved thread keeps our own URLs.
+ */
+export async function prepareModelMessages(campaignId: string, messages: AgentUIMessage[]): Promise<AgentUIMessage[]> {
+  "use step";
+  const names = messages.flatMap((m) =>
+    m.role === "user" ? m.parts.flatMap((p) => (p.type === "file" ? [uploadName(campaignId, p.url)] : [])) : [],
+  );
+  const visible = new Set(names.filter((n): n is string => Boolean(n)).slice(-MAX_VISIBLE_UPLOADS));
+  const [signed, logo] = await Promise.all([
+    signUploads(campaignId, [...visible]).catch((error) => {
+      console.error("[agent] signing uploads failed", error);
+      return new Map<string, string>();
+    }),
+    // The agent sees the real logo, so it can judge requests about it.
+    getCampaignResearch(campaignId)
+      .then((r) => logoImage(campaignId, r?.kit?.logo))
+      .catch(() => null),
+  ]);
+  const withLogo = (m: AgentUIMessage, i: number): AgentUIMessage =>
+    logo && i === messages.findIndex((x) => x.role === "user")
+      ? {
+          ...m,
+          parts: [
+            { type: "file", mediaType: "image/png", url: logo.url, filename: "brand-logo.png" },
+            { type: "text", text: "(The brand's real logo, from the brand kit. For reference; the user didn't attach it.)" },
+            ...m.parts,
+          ],
+        }
+      : m;
+  if (!names.length) return messages.map(withLogo);
+  return messages.map(withLogo).map((m) =>
+    m.role !== "user"
+      ? m
+      : {
+          ...m,
+          parts: m.parts.flatMap((p): AgentUIMessage["parts"] => {
+            if (p.type !== "file") return [p];
+            const name = uploadName(campaignId, p.url);
+            // Not a chat upload: the brand logo added above (the chat route
+            // drops any other file part before a run starts).
+            if (!name) return p.url.startsWith("https://") ? [p] : [];
+            const url = signed.get(name);
+            if (!url || !visible.has(name)) {
+              return [{ type: "text" as const, text: `(An earlier image the user attached, ref "${name}", not shown again.)` }];
+            }
+            return [
+              { ...p, url },
+              { type: "text" as const, text: `(Image attached by the user, ref "${name}".)` },
+            ];
+          }),
+        },
+  );
+}
+
 /**
  * Runs one server tool call. During a research run it also refreshes the
  * run's heartbeat (claim_research treats a quiet run as dead after 5 minutes)
@@ -53,6 +118,7 @@ export async function executeServerTool(
   campaignId: string,
   runId: string,
   input: unknown,
+  toolCallId?: string,
 ): Promise<unknown> {
   "use step";
   const campaign = await getCampaign(campaignId);
@@ -67,7 +133,7 @@ export async function executeServerTool(
   }
   const run = serverTools(campaignId, runId)[name];
   if (!run) return { ok: false, summary: `Unknown tool ${name}` };
-  return run(input as never);
+  return run(input as never, { toolCallId, runId });
 }
 
 /**

@@ -1,7 +1,7 @@
 "use client";
 
-import type { ChatStatus } from "ai";
-import { AlertTriangleIcon, BookOpenIcon, CheckIcon, Loader2Icon, RotateCwIcon, XIcon } from "lucide-react";
+import type { ChatStatus, FileUIPart } from "ai";
+import { AlertTriangleIcon, BookOpenIcon, CheckIcon, Loader2Icon, RotateCwIcon, Trash2Icon, XIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import {
@@ -17,6 +17,14 @@ import {
   PromptInputTextarea,
 } from "@/components/ai-elements/prompt-input";
 import { Shimmer } from "@/components/ai-elements/shimmer";
+import {
+  ACCEPTED_IMAGES,
+  AttachButton,
+  AttachmentPreviews,
+  MAX_ATTACHMENTS,
+  MAX_PICK_BYTES,
+  uploadAttachments,
+} from "@/components/campaigns/chat-attachments";
 import { HeadlineChoice, type ChoiceSubmission } from "@/components/campaigns/headline-choice";
 import { Button } from "@/components/ui/button";
 import { InputGroupAddon } from "@/components/ui/input-group";
@@ -39,6 +47,7 @@ export type HeadlineControls = {
  * there's nothing typed.
  */
 export function CampaignChat({
+  campaignId,
   intro,
   messages,
   status,
@@ -49,6 +58,7 @@ export function CampaignChat({
   onStop,
   onRetry,
 }: {
+  campaignId: string;
   /** Shown while the conversation is empty. */
   intro: ReactNode;
   messages: AgentUIMessage[];
@@ -57,11 +67,13 @@ export function CampaignChat({
   /** Why the input is off right now (research running or failed), if it is. */
   inputDisabledReason?: string;
   headlines: HeadlineControls;
-  onSend: (text: string) => void;
+  /** Sends a message; `files` are attached images, already uploaded (our own URLs). */
+  onSend: (text: string, files?: FileUIPart[]) => void;
   onStop: () => void;
   onRetry: () => void;
 }) {
   const [hasText, setHasText] = useState(false);
+  const [attachError, setAttachError] = useState<string>();
   const busy = status === "submitted" || status === "streaming";
   const last = messages.at(-1);
 
@@ -72,7 +84,7 @@ export function CampaignChat({
           {messages.length === 0 && intro}
 
           {messages.map((message) => {
-            if (message.role === "user") return <UserBubble key={message.id} text={textOf(message)} />;
+            if (message.role === "user") return <UserBubble key={message.id} message={message} />;
             const current = message === last && busy;
             return (
               <Message key={message.id} from="assistant" className="max-w-full">
@@ -124,6 +136,20 @@ export function CampaignChat({
                             Updating the brand kit…
                           </Shimmer>
                         ) : null;
+                      case "tool-deleteAd":
+                        return part.state === "output-available" ? (
+                          <p key={part.toolCallId} className="flex items-center gap-2 text-muted-foreground">
+                            {part.output.ok ? (
+                              <Trash2Icon className="size-4 shrink-0" />
+                            ) : (
+                              <XIcon className="size-4 shrink-0 text-destructive" />
+                            )}
+                            {part.output.summary}
+                          </p>
+                        ) : null;
+                      case "tool-generateAd":
+                      case "tool-editAd":
+                        return <AdRow key={part.toolCallId} part={part} live={current} />;
                       case "tool-readSkill":
                         return part.state === "output-available" ? (
                           <p key={part.toolCallId} className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -162,16 +188,41 @@ export function CampaignChat({
       </Conversation>
 
       <div className="border-t p-3 md:p-4">
+        {attachError && <p className="mb-2 text-sm text-destructive">{attachError}</p>}
         <PromptInput
-          onSubmit={({ text }) => {
-            if (!text.trim()) return;
-            onSend(text.trim());
+          accept={ACCEPTED_IMAGES}
+          multiple
+          maxFiles={MAX_ATTACHMENTS}
+          maxFileSize={MAX_PICK_BYTES}
+          onError={(e) =>
+            setAttachError(
+              e.code === "accept"
+                ? "Only PNG, JPEG and WebP images can be attached."
+                : e.code === "max_files"
+                  ? `Up to ${MAX_ATTACHMENTS} images per message.`
+                  : "That image is too large.",
+            )
+          }
+          onSubmit={async ({ text, files }) => {
+            if (!text.trim() && !files.length) return;
+            setAttachError(undefined);
+            let uploaded: FileUIPart[] = [];
+            if (files.length) {
+              try {
+                uploaded = await uploadAttachments(campaignId, files);
+              } catch (error) {
+                setAttachError(error instanceof Error ? error.message : "An image couldn't be uploaded.");
+                throw error; // keeps the text and images in the input to retry
+              }
+            }
+            onSend(text.trim(), uploaded);
             setHasText(false);
           }}
           // The group only auto-sizes when the textarea is its direct child; here
           // it's wrapped (PromptInputBody), so set it explicitly.
-          className="[&_[data-slot=input-group]]:h-auto [&_[data-slot=input-group]]:rounded-[1.25rem]"
+          className="[&_[data-slot=input-group]]:h-auto [&_[data-slot=input-group]]:flex-wrap [&_[data-slot=input-group]]:rounded-[1.25rem]"
         >
+          <AttachmentPreviews />
           <PromptInputBody>
             {/* One line to start; grows with the message (field-sizing:
                 content) up to max-h-48, then scrolls. */}
@@ -180,9 +231,12 @@ export function CampaignChat({
               placeholder={inputDisabledReason ?? (busy ? "Type to interrupt the agent" : "Reply or steer the agent")}
               disabled={Boolean(inputDisabledReason)}
               onChange={(e) => setHasText(e.currentTarget.value.trim().length > 0)}
-              className="min-h-0 py-2.5 pl-4"
+              className="min-h-0 py-2.5 pl-1"
             />
           </PromptInputBody>
+          <InputGroupAddon align="inline-start" className="self-end pb-1.5 pl-1.5">
+            <AttachButton disabled={Boolean(inputDisabledReason)} />
+          </InputGroupAddon>
           {/* Inline at the right, pinned to the bottom as the box grows. */}
           <InputGroupAddon align="inline-end" className="self-end pb-1.5">
             <PromptInputSubmit
@@ -214,10 +268,31 @@ function toolLine(
   return part.output.removed ? `Removed “${part.input.headline}”` : "Couldn't remove that headline";
 }
 
-function UserBubble({ text }: { text: string }) {
+/** The user's message: any attached images (click to open), then the text. */
+function UserBubble({ message }: { message: AgentUIMessage }) {
+  const text = textOf(message);
+  const images = message.parts.filter((p) => p.type === "file" && p.mediaType.startsWith("image/"));
   return (
     <Message from="user">
-      <MessageContent className="group-[.is-user]:rounded-2xl">{text}</MessageContent>
+      <div className="ml-auto flex max-w-full flex-col items-end gap-1.5">
+        {images.length > 0 && (
+          <div className="flex flex-wrap justify-end gap-1.5">
+            {images.map((p, i) =>
+              p.type === "file" ? (
+                <a key={i} href={p.url} target="_blank" rel="noreferrer" title={p.filename}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={p.url}
+                    alt={p.filename ?? "Attached image"}
+                    className="h-28 max-w-48 rounded-xl object-cover ring-1 ring-foreground/10"
+                  />
+                </a>
+              ) : null,
+            )}
+          </div>
+        )}
+        {text && <MessageContent className="group-[.is-user]:rounded-2xl">{text}</MessageContent>}
+      </div>
     </Message>
   );
 }
@@ -282,6 +357,50 @@ function ResearchStepRow({ part, live }: { part: ResearchPart; live: boolean }) 
     <p className="flex items-center gap-2 text-muted-foreground">
       <Loader2Icon className="size-4 shrink-0 animate-spin" />
       <Shimmer as="span">{`${label}${detail ? ` · ${detail}` : ""}…`}</Shimmer>
+    </p>
+  );
+}
+
+type AdPart = Extract<AgentUIMessage["parts"][number], { type: "tool-generateAd" | "tool-editAd" }>;
+
+/**
+ * One generateAd or editAd call: a spinner while fal makes it (about
+ * a minute), then a small thumbnail with the summary, or why it failed. The
+ * Ads tab holds the full-size ads.
+ */
+function AdRow({ part, live }: { part: AdPart; live: boolean }) {
+  if (part.state === "output-available") {
+    const { ok, summary, ad } = part.output;
+    return (
+      <div className="flex items-start gap-3 text-muted-foreground">
+        {ok && ad ? (
+          <a href={ad.url} target="_blank" rel="noreferrer" className="shrink-0" title="Open full size">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={ad.url}
+              alt={`Ad: ${ad.headline}`}
+              className="aspect-[9/16] w-16 rounded-md object-cover ring-1 ring-foreground/10"
+            />
+          </a>
+        ) : (
+          <XIcon className="mt-0.5 size-4 shrink-0 text-destructive" />
+        )}
+        <span className="pt-0.5">{summary}</span>
+      </div>
+    );
+  }
+  if (!live || part.state === "output-error") return null; // interrupted before it finished
+  const headline = part.type === "tool-generateAd" ? part.input?.headline : undefined;
+  const text =
+    part.type === "tool-editAd"
+      ? "Making a new version of the ad…"
+      : headline
+        ? `Making the ad for “${headline}”…`
+        : "Making an ad…";
+  return (
+    <p className="flex items-center gap-2 text-muted-foreground">
+      <Loader2Icon className="size-4 shrink-0 animate-spin" />
+      <Shimmer as="span">{text}</Shimmer>
     </p>
   );
 }

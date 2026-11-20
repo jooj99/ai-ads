@@ -18,7 +18,7 @@ import {
   SidebarRail,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { footerNav, mainNav, navItemFor, type NavItem } from "@/lib/nav";
+import { mainNav, navItemFor, type NavItem } from "@/lib/nav";
 
 // Active tab is an ink pill with white text, echoing ploy.ai's primary buttons.
 const navButtonClass =
@@ -98,7 +98,6 @@ export function AppSidebar({ account }: { account?: ReactNode }) {
       </SidebarContent>
 
       <SidebarFooter>
-        <Nav items={footerNav} />
         {account}
       </SidebarFooter>
 

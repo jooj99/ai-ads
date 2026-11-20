@@ -2,11 +2,10 @@
 
 import { useChat } from "@ai-sdk/react";
 import { WorkflowChatTransport } from "@ai-sdk/workflow/client";
-import { lastAssistantMessageIsCompleteWithToolCalls } from "ai";
+import { lastAssistantMessageIsCompleteWithToolCalls, type FileUIPart } from "ai";
 import {
   ArrowLeftIcon,
   ExternalLinkIcon,
-  ImageIcon,
   MoreHorizontalIcon,
   PenLineIcon,
   Trash2Icon,
@@ -17,11 +16,17 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
 import {
+  addAdCommentAction,
+  deleteAdAction,
+  deleteAdCommentAction,
+  reviewAdCommentAction,
+  listAdsAction,
   listHeadlinesAction,
   removeHeadlineAction,
   saveHeadlineAction,
   updateKitStyleAction,
 } from "@/app/campaigns/actions";
+import { AdStudio, type PendingAd } from "@/components/campaigns/ad-studio";
 import { CampaignChat, type HeadlineControls } from "@/components/campaigns/campaign-chat";
 import { CampaignTitle } from "@/components/campaigns/campaign-title";
 import { DeleteCampaignDialog } from "@/components/campaigns/delete-campaign-button";
@@ -30,6 +35,7 @@ import { ChatStart } from "@/components/campaigns/chat-start";
 import { BrandKitView, ProductPicks } from "@/components/research/brand-kit-view";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -46,7 +52,7 @@ import {
   type AgentUIMessage,
   type CampaignCopy,
 } from "@/lib/agent/tools";
-import type { Campaign, SavedHeadline } from "@/lib/campaigns";
+import type { AdComment, Campaign, SavedAd, SavedHeadline } from "@/lib/campaigns";
 import { campaignTopic, EVENTS } from "@/lib/realtime";
 import type { BrandKit } from "@/lib/research/types";
 import { browserSupabase } from "@/lib/supabase/browser";
@@ -98,6 +104,7 @@ export function CampaignWorkspace({
   savedKit,
   savedMessages,
   savedHeadlines,
+  savedAds,
 }: {
   campaign: Campaign;
   /** The saved run says "researching" but has gone quiet for 5+ minutes. */
@@ -105,6 +112,7 @@ export function CampaignWorkspace({
   savedKit: BrandKit | null;
   savedMessages: AgentUIMessage[];
   savedHeadlines: SavedHeadline[];
+  savedAds: SavedAd[];
 }) {
   const router = useRouter();
 
@@ -210,6 +218,9 @@ export function CampaignWorkspace({
     // changes up when its reply finishes.
     onFinish: ({ message }) => {
       void syncHeadlines();
+      if (message.parts.some((p) => p.type === "tool-generateAd" || p.type === "tool-editAd" || p.type === "tool-deleteAd")) {
+        void syncAds();
+      }
       if (message.parts.some((p) => KIT_TOOL_PARTS.has(p.type))) {
         setReloadKit(true);
         router.refresh();
@@ -250,6 +261,8 @@ export function CampaignWorkspace({
   async function interrupt() {
     await fetch(`${chatApi}/${runId.current ?? campaign.id}`, { method: "DELETE" }).catch(() => undefined);
     await stop();
+    // The stop cancelled any ads that run was making; drop their placeholders.
+    void syncAds();
   }
 
   // ---- Saved headlines (any number, from any card, or written by the user) ----
@@ -260,6 +273,118 @@ export function CampaignWorkspace({
     const fresh = await listHeadlinesAction(campaign.id);
     if (fresh) setHeadlines(fresh);
   }
+
+  // ---- Generated ads (made by the agent's generateAd tool, edited by editAd) ----
+  const [ads, setAds] = useState(savedAds);
+  const [adError, setAdError] = useState<string>();
+
+  async function syncAds() {
+    const fresh = await listAdsAction(campaign.id);
+    if (fresh) setAds(fresh);
+  }
+
+  /**
+   * Deletes one version, or the whole ad (every version sharing its number):
+   * gone from the page at once (the studio has already animated it out), and
+   * deleted on the server in the background. If that fails, it comes back
+   * with an error.
+   */
+  function deleteAd(ad: SavedAd, scope: "version" | "ad") {
+    setAdError(undefined);
+    setAds((list) => list.filter((a) => (scope === "ad" ? a.number !== ad.number : a.id !== ad.id)));
+    void deleteAdAction(campaign.id, ad.id, scope).then((result) => {
+      if (!result.ok) {
+        setAdError(result.error);
+        void syncAds();
+      }
+    });
+  }
+
+  /** Pins a comment on an ad; it shows once saved. */
+  async function addComment(ad: SavedAd, comment: { x: number; y: number; body: string }) {
+    setAdError(undefined);
+    const result = await addAdCommentAction(campaign.id, ad.id, comment);
+    if (!result.ok) {
+      setAdError(result.error);
+      return false;
+    }
+    setAds((list) => list.map((a) => (a.id === ad.id ? { ...a, comments: [...a.comments, result.comment] } : a)));
+    return true;
+  }
+
+  async function deleteComment(ad: SavedAd, comment: AdComment) {
+    setAdError(undefined);
+    setAds((list) =>
+      list.map((a) => (a.id === ad.id ? { ...a, comments: a.comments.filter((c) => c.id !== comment.id) } : a)),
+    );
+    // Deleted in the background; if that fails, the comment comes back.
+    void deleteAdCommentAction(campaign.id, comment.id).then((result) => {
+      if (!result.ok) {
+        setAdError(result.error);
+        void syncAds();
+      }
+    });
+  }
+
+  /**
+   * "Was it resolved?" Yes: the comment leaves the page at once (its pin has
+   * already shrunk away) and is deleted in the background; if that fails, it
+   * comes back with an error. No: it's re-opened on the ad's newest version.
+   */
+  async function reviewComment(comment: AdComment, resolved: boolean) {
+    setAdError(undefined);
+    if (resolved) {
+      setAds((list) =>
+        list.map((a) => ({
+          ...a,
+          comments: a.comments.filter((c) => c.id !== comment.id),
+          appliedComments: a.appliedComments.filter((c) => c.id !== comment.id),
+        })),
+      );
+      void reviewAdCommentAction(campaign.id, comment.id, true).then((result) => {
+        if (!result.ok) {
+          setAdError(result.error);
+          void syncAds();
+        }
+      });
+      return;
+    }
+    const result = await reviewAdCommentAction(campaign.id, comment.id, false);
+    if (!result.ok) setAdError(result.error);
+    await syncAds();
+  }
+
+  // Ads the agent is making or editing in the reply streaming now, and
+  // re-reading the list each time one finishes, so the tab fills in live.
+  const adParts = (messages.at(-1)?.role === "assistant" ? messages.at(-1)!.parts : []).filter(
+    (p) => p.type === "tool-generateAd" || p.type === "tool-editAd" || p.type === "tool-deleteAd",
+  );
+  const replying = status === "streaming" || status === "submitted";
+  const pendingAds: PendingAd[] = replying
+    ? adParts.flatMap((p) =>
+        p.type === "tool-generateAd" && p.state === "input-available"
+          ? [{ key: p.toolCallId, headline: p.input.headline, cta: p.input.cta }]
+          : [],
+      )
+    : [];
+  const editingAds = replying
+    ? adParts.flatMap((p) => (p.type === "tool-editAd" && p.state === "input-available" ? [p.input.adId] : []))
+    : [];
+  const adsDone = adParts.filter((p) => p.state === "output-available").length;
+
+  // The ads are the workspace's main view: open on them once there are any,
+  // and switch to them when the agent starts making or editing one.
+  const [tab, setTab] = useState(savedAds.length ? "ads" : "brand");
+  const adsStarted = pendingAds.length + editingAds.length;
+  const [seenStarted, setSeenStarted] = useState(adsStarted);
+  if (adsStarted !== seenStarted) {
+    setSeenStarted(adsStarted);
+    if (adsStarted > seenStarted) setTab("ads");
+  }
+  useEffect(() => {
+    if (adsDone) void syncAds();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-read only when another ad finishes
+  }, [adsDone]);
 
   /** Saves or removes a headline, showing the change at once and undoing it if the save fails. */
   async function changeHeadline(h: SavedHeadline, on: boolean): Promise<boolean> {
@@ -313,9 +438,9 @@ export function CampaignWorkspace({
   const headlineControls: HeadlineControls = { saved: headlines, onSubmit: submitChoice };
 
   /** Sending while the agent is working (a reply, or research) interrupts it first. */
-  async function send(text: string) {
+  async function send(text: string, files?: FileUIPart[]) {
     if (status === "submitted" || status === "streaming") await interrupt();
-    void sendMessage({ text });
+    void sendMessage(files?.length ? { text, files } : { text });
   }
 
   const waiting = pendingChoice(messages);
@@ -330,7 +455,7 @@ export function CampaignWorkspace({
   return (
     // The tabs' root wraps the page so their buttons can sit in the header
     // while their content fills the panel on the right.
-    <Tabs defaultValue="brand" className="flex flex-col gap-0 md:h-[calc(100svh-4.5rem)]">
+    <Tabs value={tab} onValueChange={setTab} className="flex flex-col gap-0 md:h-[calc(100svh-4.5rem)]">
       <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b px-3 py-2.5 md:px-4">
         <Button asChild variant="ghost" size="icon-sm" aria-label="All campaigns">
           <Link href="/campaigns">
@@ -354,7 +479,7 @@ export function CampaignWorkspace({
           {[
             ["brand", "Brand kit"],
             ["products", kit?.offering === "services" ? "Services" : "Products"],
-            ["ads", "Ads"],
+            ["ads", ads.length ? `Ads · ${new Set(ads.map((a) => a.number)).size}` : "Ads"],
           ].map(([value, label]) => (
             <TabsTrigger
               key={value}
@@ -387,17 +512,20 @@ export function CampaignWorkspace({
         />
       </header>
 
-      <div className="grid min-h-0 flex-1 md:grid-cols-[minmax(20rem,26rem)_1fr] md:grid-rows-[minmax(0,1fr)]">
+      {/* Wide screens: the panel (ads, brand kit, products) on the left, the
+          chat on the right. Phones stack them, chat first. */}
+      <div className="grid min-h-0 flex-1 md:grid-cols-[1fr_minmax(20rem,26rem)] md:grid-rows-[minmax(0,1fr)]">
         <section
           aria-label="Chat with the ad agent"
-          className="flex h-[75svh] min-h-0 flex-col border-b md:h-auto md:border-r md:border-b-0"
+          className="flex h-[75svh] min-h-0 flex-col border-b md:order-2 md:h-auto md:border-b-0 md:border-l"
         >
           <CampaignChat
             messages={messages}
             status={status}
             error={error}
             inputDisabledReason={inputDisabledReason}
-            onSend={(text) => void send(text)}
+            campaignId={campaign.id}
+            onSend={(text, files) => void send(text, files)}
             headlines={headlineControls}
             onStop={() => void interrupt()}
             onRetry={() => {
@@ -418,7 +546,7 @@ export function CampaignWorkspace({
           />
         </section>
 
-        <section aria-label="Campaign" className="min-h-0 overflow-y-auto bg-muted/60">
+        <section aria-label="Campaign" className="min-h-0 overflow-y-auto bg-muted/60 md:order-1">
           <div className="@container flex flex-col gap-4 p-4 md:p-6">
             {(startError || editError) && (
               <p className="rounded-xl border border-destructive/40 bg-background p-3 text-sm">
@@ -426,7 +554,7 @@ export function CampaignWorkspace({
               </p>
             )}
 
-            <TabsContent value="brand">
+            <TabsContent value="brand" className="flex flex-col gap-4">
               {kit && hasKit ? (
                 <BrandKitView
                   kit={kit}
@@ -438,18 +566,36 @@ export function CampaignWorkspace({
               ) : (
                 <PanelPlaceholder running={running} />
               )}
+              {(researchDone || headlines.length > 0) && (
+                <HeadlinesCard
+                  headlines={headlines}
+                  error={headlineError}
+                  waiting={Boolean(waiting)}
+                  researchDone={researchDone}
+                  onRemove={(h) => void changeHeadline(h, false)}
+                  onWrite={(copy) => changeHeadline({ ...copy, source: "user", proposalId: null }, true)}
+                />
+              )}
             </TabsContent>
             <TabsContent value="products">
               {kit && hasKit ? <ProductPicks kit={kit} pending={running} /> : <PanelPlaceholder running={running} />}
             </TabsContent>
             <TabsContent value="ads">
               <AdsPanel
-                headlines={headlines}
-                error={headlineError}
-                waiting={Boolean(waiting)}
-                researchDone={researchDone}
-                onRemove={(h) => void changeHeadline(h, false)}
-                onWrite={(copy) => changeHeadline({ ...copy, source: "user", proposalId: null }, true)}
+                ads={ads}
+                pendingAds={pendingAds}
+                editingAds={editingAds}
+                brand={name}
+                adError={adError}
+                onDeleteAd={deleteAd}
+                onAddComment={addComment}
+                onDeleteComment={(ad, c) => void deleteComment(ad, c)}
+                onReview={reviewComment}
+                onApply={(ad, count) =>
+                  void send(
+                    `Apply my ${count === 1 ? "comment" : `${count} comments`} to Ad ${ad.number} “${ad.headline}” (ad ${ad.id}).`,
+                  )
+                }
               />
             </TabsContent>
           </div>
@@ -479,11 +625,53 @@ function PanelPlaceholder({ running }: { running: boolean }) {
   );
 }
 
-/**
- * The Ads tab. Generation isn't built yet, so for now it shows the headlines
- * the user saved (each becomes an ad variant), with remove and write-your-own.
- */
+/** The Ads tab: the ad studio (ads, versions, pinned comments). */
 function AdsPanel({
+  ads,
+  pendingAds,
+  editingAds,
+  brand,
+  adError,
+  onDeleteAd,
+  onAddComment,
+  onDeleteComment,
+  onApply,
+  onReview,
+}: {
+  ads: SavedAd[];
+  pendingAds: PendingAd[];
+  editingAds: string[];
+  brand: string;
+  adError?: string;
+  onDeleteAd: (ad: SavedAd, scope: "version" | "ad") => void;
+  onAddComment: (ad: SavedAd, comment: { x: number; y: number; body: string }) => Promise<boolean>;
+  onDeleteComment: (ad: SavedAd, comment: AdComment) => void;
+  onApply: (ad: SavedAd, count: number) => void;
+  onReview: (comment: AdComment, resolved: boolean) => Promise<void>;
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      {adError && <p className="text-sm text-destructive">{adError}</p>}
+      <AdStudio
+        ads={ads}
+        pending={pendingAds}
+        editing={editingAds}
+        brand={brand}
+        onDelete={onDeleteAd}
+        onAddComment={onAddComment}
+        onDeleteComment={onDeleteComment}
+        onApply={onApply}
+        onReview={onReview}
+      />
+    </div>
+  );
+}
+
+/**
+ * The saved headlines (each becomes an ad), in the Brand kit tab, with
+ * remove and write-your-own. Picks from the chat's cards land here too.
+ */
+function HeadlinesCard({
   headlines,
   error,
   waiting,
@@ -500,19 +688,19 @@ function AdsPanel({
 }) {
   const [writing, setWriting] = useState(false);
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-col gap-3 rounded-xl bg-background p-5 ring-1 ring-foreground/10">
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-sm font-medium">
-            Headlines{headlines.length > 0 && <span className="text-muted-foreground"> · {headlines.length}</span>}
-          </p>
-          {researchDone && !writing && (
-            <Button size="sm" variant="ghost" className="text-muted-foreground" onClick={() => setWriting(true)}>
-              <PenLineIcon />
-              Write your own
-            </Button>
-          )}
-        </div>
+    <Card className="gap-3">
+      <CardHeader className="flex flex-row items-center justify-between gap-2">
+        <CardTitle>
+          Headlines{headlines.length > 0 && <span className="font-normal text-muted-foreground"> · {headlines.length}</span>}
+        </CardTitle>
+        {researchDone && !writing && (
+          <Button size="sm" variant="ghost" className="-my-1 text-muted-foreground" onClick={() => setWriting(true)}>
+            <PenLineIcon />
+            Write your own
+          </Button>
+        )}
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
         {error && <p className="text-sm text-destructive">{error}</p>}
         {headlines.length > 0 ? (
           <ul className="flex flex-col divide-y">
@@ -551,17 +739,7 @@ function AdsPanel({
           </p>
         )}
         {writing && <WriteOwnForm onSubmit={onWrite} onCancel={() => setWriting(false)} />}
-      </div>
-      <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-foreground/15 px-6 py-12 text-center">
-        <span className="flex size-12 items-center justify-center rounded-full bg-background">
-          <ImageIcon className="size-5" />
-        </span>
-        <p className="font-medium">No ads yet</p>
-        <p className="max-w-sm text-sm text-muted-foreground">
-          Each saved headline becomes a 9:16 ad built on your product photos. Generating is the
-          next step being built.
-        </p>
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }

@@ -1,10 +1,15 @@
 import "server-only";
 
+import { editAd, type EditAdInput } from "@/lib/ads/edit";
+import { generateAd, type GenerateAdInput } from "@/lib/ads/generate";
 import { kitTools } from "@/lib/agent/kit-tools";
 import { agentInstructions } from "@/lib/agent/prompt";
 import { researchTools } from "@/lib/agent/research-tools";
 import { isSkillName, listSkills, loadSkill } from "@/lib/agent/skills";
-import { addHeadline, getCampaignResearch, listHeadlines, removeHeadline } from "@/lib/campaigns";
+import { addHeadline, deleteAd, getCampaignResearch, listAds, listHeadlines, removeHeadline } from "@/lib/campaigns";
+
+/** What a tool call knows about itself; `toolCallId` makes paid tools idempotent across step retries. */
+export type ToolCallContext = { toolCallId?: string; runId?: string };
 
 export const AGENT_MODEL =
   process.env.AGENT_MODEL ?? process.env.RESEARCH_MODEL ?? "anthropic/claude-sonnet-5.5";
@@ -38,6 +43,23 @@ export function serverTools(campaignId: string, runId?: string) {
         return { removed: false };
       }
     },
+    generateAd: (input: GenerateAdInput, ctx?: ToolCallContext) => generateAd(campaignId, input, ctx ?? {}),
+    editAd: (input: EditAdInput, ctx?: ToolCallContext) => editAd(campaignId, input, ctx ?? {}),
+    deleteAd: async ({ adId, scope }: { adId: string; scope: "version" | "ad" }) => {
+      try {
+        const { number, versions } = await deleteAd(campaignId, adId, scope);
+        return {
+          ok: true,
+          summary:
+            scope === "ad"
+              ? `Deleted Ad ${number}${versions > 1 ? ` and its ${versions} versions` : ""}.`
+              : `Deleted a version of Ad ${number}.`,
+        };
+      } catch (error) {
+        console.error("[agent] deleteAd failed", error);
+        return { ok: false, summary: "Couldn't delete that ad (it may already be gone)." };
+      }
+    },
     readSkill: async ({ name }: { name: string }) =>
       isSkillName(name)
         ? { ok: true, body: (await loadSkill(name)).body }
@@ -48,7 +70,7 @@ export function serverTools(campaignId: string, runId?: string) {
         (input: unknown) => (t.execute as (input: unknown) => Promise<unknown>)(input),
       ]),
     ),
-  } as Record<string, (input: never) => Promise<unknown>>;
+  } as Record<string, (input: never, ctx?: ToolCallContext) => Promise<unknown>>;
 }
 
 /**
@@ -61,13 +83,14 @@ export async function buildInstructions(
   mode: "chat" | "research",
   submitted: { headline: string; cta: string }[],
 ): Promise<string> {
-  const [research, headlines, skills] = await Promise.all([
+  const [research, headlines, skills, ads] = await Promise.all([
     getCampaignResearch(campaignId),
     listHeadlines(campaignId),
     listSkills(),
+    listAds(campaignId),
   ]);
   if (!research) throw new Error("Campaign not found");
-  const base = agentInstructions(research, headlines, submitted, skills);
+  const base = agentInstructions(research, headlines, submitted, skills, ads);
   if (mode === "chat") return base;
   const skill = await loadSkill("research");
   return `${base}

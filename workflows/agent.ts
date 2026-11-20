@@ -8,6 +8,7 @@ import {
   executeServerTool,
   finishResearchRun,
   loadAgentSetup,
+  prepareModelMessages,
   saveRunThread,
 } from "@/lib/agent/workflow-steps";
 
@@ -32,6 +33,8 @@ import {
 /** Research steps that cost something per chat turn; free reads don't count. */
 const MAX_RESEARCH_CALLS = 8;
 const FREE_RESEARCH_TOOLS = new Set(["getCatalog", "researchStatus", "listSiteLinks"]);
+/** Each ad or edit is a paid image (about a minute each); a turn makes at most this many. */
+const MAX_ADS_PER_TURN = 6;
 
 export async function researchRun(campaignId: string) {
   "use workflow";
@@ -69,24 +72,35 @@ async function runAgent(
     tools[name] =
       name === "proposeHeadlines"
         ? spec
-        : { ...spec, execute: (input: unknown) => executeServerTool(name, campaignId, runId, input) };
+        : {
+            ...spec,
+            execute: (input: unknown, { toolCallId }: { toolCallId: string }) =>
+              executeServerTool(name, campaignId, runId, input, toolCallId),
+          };
   }
   const costly = Object.keys(researchToolSpecs).filter((n) => !FREE_RESEARCH_TOOLS.has(n));
-  const others = Object.keys(tools).filter((n) => !costly.includes(n));
 
   const agent = new WorkflowAgent({ model: setup.model, instructions: setup.instructions, tools });
   const result = await agent.stream({
-    messages: await convertToModelMessages(messages, { ignoreIncompleteToolCalls: true }),
+    // Attached images get signed URLs the model can fetch (a step: it signs with our key).
+    messages: await convertToModelMessages(await prepareModelMessages(campaignId, messages), {
+      ignoreIncompleteToolCalls: true,
+    }),
     writable: getWritable<ModelCallStreamPart>(),
     abortSignal: controller.signal,
     stopWhen: isStepCount(mode === "research" ? 40 : 12),
     prepareStep: ({ steps }) => {
-      // A chat turn has a per-turn research budget; a research run is bounded
+      // A chat turn has per-turn budgets for research and ads; a research run is bounded
       // by its step limit and works through the skill's checklist. (Forcing a
       // tool call each step isn't supported by this model via the Gateway.)
       if (mode === "research") return {};
-      const calls = steps.flatMap((s) => s.toolCalls).filter((c) => costly.includes(c.toolName)).length;
-      return calls >= MAX_RESEARCH_CALLS ? { activeTools: others } : {};
+      const calls = steps.flatMap((s) => s.toolCalls);
+      const research = calls.filter((c) => costly.includes(c.toolName)).length;
+      const ads = calls.filter((c) => c.toolName === "generateAd" || c.toolName === "editAd").length;
+      let active = Object.keys(tools);
+      if (research >= MAX_RESEARCH_CALLS) active = active.filter((n) => !costly.includes(n));
+      if (ads >= MAX_ADS_PER_TURN) active = active.filter((n) => n !== "generateAd" && n !== "editAd");
+      return active.length < Object.keys(tools).length ? { activeTools: active } : {};
     },
   });
 

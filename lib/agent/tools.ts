@@ -14,6 +14,8 @@ import { z } from "zod";
  *   the conversation moves on.
  * - `saveHeadline` / `removeHeadline` run on the server (the route adds
  *   `execute`), for when the user asks for changes in chat.
+ * - `generateAd` makes one 9:16 ad on fal (server-side, `lib/ads/generate.ts`);
+ *   `editAd` makes a new version of one from pinned comments (`lib/ads/edit.ts`).
  * - `editBrandText`, `editTags`, `editColors`, `editFonts` let the agent change
  *   the brand kit when asked (server-side, `lib/agent/kit-tools.ts`). Each
  *   returns a one-line summary the chat shows.
@@ -125,6 +127,92 @@ export const editFontsSpec = tool({
     remove: z.array(z.string()).max(8).optional().describe("Family names of fonts to remove."),
   }),
   outputSchema: kitEditResult,
+});
+
+// --- ads ---------------------------------------------------------------------
+
+const adResult = z.object({
+  ok: z.boolean(),
+  summary: z.string(),
+  ad: z.object({ id: z.string(), url: z.string(), headline: z.string(), cta: z.string() }).optional(),
+  /** For edits: what visibly changed, from comparing the ad before and after. */
+  changes: z.array(z.string()).optional(),
+});
+
+/** Images the user attached in chat, to use in an ad (by their ref), each with how to use it. */
+const references = z
+  .array(
+    z.object({
+      image: z.string().describe('The image\'s ref from the chat, e.g. "3f2a….png".'),
+      use: z
+        .string()
+        .max(300)
+        .describe('How the image model should use it, e.g. "add this sticker to the phone case" or "match this background style".'),
+    }),
+  )
+  .max(4)
+  .optional()
+  .describe("Images the user attached in chat that they want used in this ad. Only ones they asked to use.");
+
+export const generateAdSpec = tool({
+  description:
+    "Generate one full-screen 9:16 portrait image ad for a saved headline and CTA, built on real product photos with Nano Banana Pro. It takes about a minute. The brand's colors, fonts and voice are applied automatically. Call it once per headline; several calls in the same step run in parallel.",
+  inputSchema: z.object({
+    headline: z.string().min(1).max(80).describe("A saved headline, exactly as saved."),
+    cta: z.string().min(1).max(30).describe("Its CTA, exactly as saved."),
+    productIds: z
+      .array(z.string())
+      .min(1)
+      .max(3)
+      .optional()
+      .describe("Catalog ids (from the hero list or getCatalog) of 1–2 products whose photos suit this headline. Defaults to the first hero."),
+    references,
+  }),
+  outputSchema: adResult,
+});
+
+export const deleteAdSpec = tool({
+  description:
+    "Delete an ad when the user asks: one version of it, or the whole ad with every version. Use the id of the version they mean (from the ads list). Can't be undone.",
+  inputSchema: z.object({
+    adId: z.string().describe("The id of the ad version (from the ads list in your instructions)."),
+    scope: z.enum(["version", "ad"]).describe('"version" deletes just that version; "ad" deletes the ad and all its versions.'),
+  }),
+  outputSchema: z.object({ ok: z.boolean(), summary: z.string() }),
+});
+
+export const editAdSpec = tool({
+  description:
+    "Make a new version of an existing ad from feedback: the comments the user pinned on it (applied automatically) and/or an instruction you write from what they said in chat. Keeps the headline, CTA and products. Takes about a minute; the original stays as the earlier version.",
+  inputSchema: z.object({
+    adId: z.string().describe("The id of the ad version to edit (from the ads list in your instructions)."),
+    instruction: z
+      .string()
+      .max(500)
+      .optional()
+      .describe("A change the user asked for in chat, written as a clear edit request. Omit when only applying pinned comments."),
+    references,
+    include: z
+      .object({
+        logo: z.boolean().optional().describe("Send the real brand logo as an image (e.g. to fix, add or swap in the logo)."),
+        colors: z
+          .union([z.literal("all"), z.array(z.string().regex(/^#[0-9a-fA-F]{6}$/))])
+          .optional()
+          .describe('Brand colors to send, as hex codes from the kit (or "all"): each goes as text and as a solid swatch image.'),
+        productIds: z
+          .array(z.string())
+          .max(3)
+          .optional()
+          .describe("Catalog ids of products whose photos to send (e.g. to swap or fix a product)."),
+        fonts: z.boolean().optional().describe("Send the brand font names."),
+        voice: z.boolean().optional().describe("Send the brand voice (traits and description)."),
+      })
+      .optional()
+      .describe(
+        "Brand kit items to send with this edit. By default an edit sees only the ad, so it keeps everything else; include only what the change needs.",
+      ),
+  }),
+  outputSchema: adResult,
 });
 
 // --- research --------------------------------------------------------------
@@ -263,6 +351,9 @@ export const agentToolSpecs = {
   editColors: editColorsSpec,
   editFonts: editFontsSpec,
   readSkill: readSkillSpec,
+  generateAd: generateAdSpec,
+  editAd: editAdSpec,
+  deleteAd: deleteAdSpec,
   ...researchToolSpecs,
 };
 

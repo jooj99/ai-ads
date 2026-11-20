@@ -5,7 +5,7 @@ import { Suspense } from "react";
 
 import { CampaignWorkspace } from "@/components/campaigns/campaign-workspace";
 import { Skeleton } from "@/components/ui/skeleton";
-import { getCampaignResearch, getChat, listHeadlines } from "@/lib/campaigns";
+import { getCampaignResearch, getChat, listAds, listHeadlines } from "@/lib/campaigns";
 import { requireUser } from "@/lib/supabase/auth";
 
 export const metadata: Metadata = { title: "Campaign" };
@@ -26,11 +26,13 @@ async function Campaign({ params }: { params: PageProps<"/campaigns/[id]">["para
   let research: Awaited<ReturnType<typeof getCampaignResearch>>;
   let messages: Awaited<ReturnType<typeof getChat>>;
   let headlines: Awaited<ReturnType<typeof listHeadlines>>;
+  let ads: Awaited<ReturnType<typeof listAds>>;
   try {
-    [research, messages, headlines] = await Promise.all([
+    [research, messages, headlines, ads] = await Promise.all([
       getCampaignResearch(id),
       getChat(id),
       listHeadlines(id),
+      listAds(id),
     ]);
   } catch (error) {
     console.error("[campaigns] load failed", error);
@@ -50,6 +52,7 @@ async function Campaign({ params }: { params: PageProps<"/campaigns/[id]">["para
       savedKit={research.kit}
       savedMessages={messages}
       savedHeadlines={headlines}
+      savedAds={ads}
     />
   );
 }
@@ -67,13 +70,13 @@ function CampaignSkeleton() {
         <Skeleton className="size-7 rounded-full" />
         <Skeleton className="h-6 w-48" />
       </div>
-      <div className="grid flex-1 md:grid-cols-[minmax(20rem,26rem)_1fr]">
-        <div className="flex flex-col gap-4 p-5 md:border-r">
+      <div className="grid flex-1 md:grid-cols-[1fr_minmax(20rem,26rem)]">
+        <div className="flex flex-col gap-4 p-5 md:order-2 md:border-l">
           <Skeleton className="ml-auto h-10 w-48 rounded-2xl" />
           <Skeleton className="h-4 w-64" />
           <Skeleton className="h-24 w-full rounded-xl" />
         </div>
-        <div className="flex flex-col gap-4 bg-muted/60 p-6">
+        <div className="flex flex-col gap-4 bg-muted/60 p-6 md:order-1">
           <Skeleton className="h-9 w-64 rounded-full bg-background" />
           <Skeleton className="h-40 w-full rounded-xl bg-background" />
         </div>

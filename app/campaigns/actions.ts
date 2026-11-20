@@ -6,12 +6,19 @@ import { z } from "zod";
 import { requireUser } from "@/lib/supabase/auth";
 
 import {
+  addAdComment,
   addHeadline,
+  deleteAd,
+  deleteAdComment,
+  reviewAdComment,
   deleteCampaign,
+  listAds,
   listHeadlines,
   removeHeadline,
   renameCampaign,
   updateKitStyle,
+  type AdComment,
+  type SavedAd,
   type SavedHeadline,
 } from "@/lib/campaigns";
 
@@ -139,4 +146,62 @@ export async function listHeadlinesAction(campaignId: string): Promise<SavedHead
     console.error("[campaigns] listing headlines failed", error);
     return null;
   }
+}
+
+/** Re-reads the campaign's ads (after the agent made some in chat). */
+export async function listAdsAction(campaignId: string): Promise<SavedAd[] | null> {
+  await requireUser();
+  if (!id.safeParse(campaignId).success) return null;
+  try {
+    return await listAds(campaignId);
+  } catch (error) {
+    console.error("[campaigns] listing ads failed", error);
+    return null;
+  }
+}
+
+/** Deletes one version of an ad, or the whole ad (every version). */
+export async function deleteAdAction(
+  campaignId: string,
+  adId: string,
+  scope: "version" | "ad",
+): Promise<ActionResult> {
+  await requireUser();
+  if (!id.safeParse(campaignId).success || !id.safeParse(adId).success) return { ok: false, error: "Unknown ad." };
+  return run(async () => void (await deleteAd(campaignId, adId, scope === "ad" ? "ad" : "version")), "Couldn't delete that ad.");
+}
+
+const fraction = z.number().min(0).max(1);
+
+/** Pins a comment to a spot on an ad (x/y as fractions of its width/height). */
+export async function addAdCommentAction(
+  campaignId: string,
+  adId: string,
+  comment: { x: number; y: number; body: string },
+): Promise<{ ok: true; comment: AdComment } | { ok: false; error: string }> {
+  await requireUser();
+  const parsed = z
+    .object({ campaignId: id, adId: id, x: fraction, y: fraction, body: z.string().trim().min(1).max(500) })
+    .safeParse({ campaignId, adId, ...comment });
+  if (!parsed.success) return { ok: false, error: "Comments need 1 to 500 characters." };
+  try {
+    const { campaignId: cid, adId: aid, ...rest } = parsed.data;
+    return { ok: true, comment: await addAdComment(cid, aid, rest) };
+  } catch (error) {
+    console.error("[campaigns] adding a comment failed", error);
+    return { ok: false, error: "Couldn't save that comment." };
+  }
+}
+
+export async function deleteAdCommentAction(campaignId: string, commentId: string): Promise<ActionResult> {
+  await requireUser();
+  if (!id.safeParse(campaignId).success || !id.safeParse(commentId).success) return { ok: false, error: "Unknown comment." };
+  return run(() => deleteAdComment(campaignId, commentId), "Couldn't delete that comment.");
+}
+
+/** "Was it resolved?" for a comment an edit applied: yes resolves it, no re-opens it on the newest version. */
+export async function reviewAdCommentAction(campaignId: string, commentId: string, resolved: boolean): Promise<ActionResult> {
+  await requireUser();
+  if (!id.safeParse(campaignId).success || !id.safeParse(commentId).success) return { ok: false, error: "Unknown comment." };
+  return run(() => reviewAdComment(campaignId, commentId, resolved === true), "Couldn't save that answer.");
 }

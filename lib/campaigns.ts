@@ -10,7 +10,9 @@ import type {
   ResearchStep,
   SelectedProduct,
 } from "@/lib/research/types";
+import { adImageUrl, deleteAdFiles } from "@/lib/ads/store";
 import { deleteFontFiles } from "@/lib/research/font-store";
+import { deleteUploads } from "@/lib/uploads";
 import { supabase } from "@/lib/supabase/server";
 
 export type CampaignStatus = "researching" | "research_failed" | "ready";
@@ -262,6 +264,8 @@ export async function deleteCampaign(id: string): Promise<void> {
   if (error) throw error;
   // Storage isn't covered by the cascade; a failure here only leaves orphaned files.
   await deleteFontFiles(id).catch((e) => console.error("[campaigns] deleting font files failed", e));
+  await deleteAdFiles(id).catch((e) => console.error("[campaigns] deleting ad files failed", e));
+  await deleteUploads(id).catch((e) => console.error("[campaigns] deleting chat uploads failed", e));
 }
 
 /** The brand kit fields the user (in the panel) or the agent (in chat) can edit. */
@@ -397,4 +401,208 @@ export async function removeHeadline(id: string, h: { headline: string; cta: str
     .eq("headline", h.headline)
     .eq("cta", h.cta);
   if (error) throw error;
+}
+
+/** A comment pinned to a spot on an ad: x/y are fractions of its width/height. */
+export type AdComment = {
+  id: string;
+  x: number;
+  y: number;
+  body: string;
+  /** open → applied (by an edit) → resolved or unresolved (the user's answer). */
+  status: "open" | "applied" | "resolved" | "unresolved";
+  /** The version an edit applied it in. */
+  appliedAdId: string | null;
+  createdAt: string;
+};
+
+/** A generated ad as the app shows it. `imageUrl` is our own route, never fal's. */
+export type SavedAd = {
+  id: string;
+  /** The ad's number in the campaign ("Ad 3"); every version of an ad shares it. */
+  number: number;
+  /** The version this one was edited from; null for an original. */
+  parentId: string | null;
+  /** The feedback this version applied, for edits. */
+  instruction: string | null;
+  /** For edits: how much of the ad outside the pins still looks as before (0–100). */
+  retained: number | null;
+  /** For edits: what visibly changed (bullets from comparing before and after). */
+  changes: string[] | null;
+  comments: AdComment[];
+  /** Comments (pinned on an earlier version) that the edit making this version applied: what to review here. */
+  appliedComments: AdComment[];
+  headline: string;
+  cta: string;
+  productIds: string[];
+  status: "generating" | "ready" | "failed";
+  imageUrl: string | null;
+  width: number | null;
+  height: number | null;
+  error: string | null;
+  createdAt: string;
+};
+
+/** The campaign's ads, newest first. */
+export async function listAds(id: string): Promise<SavedAd[]> {
+  if (!UUID.test(id)) return [];
+  const { data, error } = await supabase()
+    .from("campaign_ads")
+    .select(
+      "id, number, parent_id, instruction, retained, changes, headline, cta, product_ids, status, image_path, width, height, error, created_at, ad_comments!ad_comments_ad_id_fkey(id, x, y, body, status, applied_ad_id, created_at), applied:ad_comments!ad_comments_applied_ad_id_fkey(id, x, y, body, status, applied_ad_id, created_at)",
+    )
+    .eq("campaign_id", id)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((row) => ({
+    id: row.id,
+    number: row.number ?? 0,
+    parentId: row.parent_id,
+    instruction: row.instruction,
+    retained: row.retained,
+    changes: row.changes,
+    comments: toComments(row.ad_comments),
+    appliedComments: toComments(row.applied),
+    headline: row.headline,
+    cta: row.cta,
+    productIds: row.product_ids ?? [],
+    status: row.status,
+    imageUrl: row.image_path ? adImageUrl(id, row.image_path) : null,
+    width: row.width,
+    height: row.height,
+    error: row.error,
+    createdAt: row.created_at,
+  }));
+}
+
+/** Deletes one ad and its image. */
+/**
+ * Deletes one version of an ad, or (`scope: "ad"`) the whole ad: every
+ * version sharing its number. Their images go too; their comments cascade.
+ * Returns what was deleted, for the agent's summary.
+ */
+export async function deleteAd(
+  id: string,
+  adId: string,
+  scope: "version" | "ad" = "version",
+): Promise<{ number: number; versions: number }> {
+  if (!UUID.test(id) || !UUID.test(adId)) throw new Error("Unknown ad");
+  const db = supabase();
+  const { data: ad, error: findError } = await db
+    .from("campaign_ads")
+    .select("number")
+    .eq("campaign_id", id)
+    .eq("id", adId)
+    .maybeSingle();
+  if (findError) throw findError;
+  if (!ad) throw new Error("Unknown ad");
+  let query = db.from("campaign_ads").delete().eq("campaign_id", id);
+  query = scope === "ad" && ad.number != null ? query.eq("number", ad.number) : query.eq("id", adId);
+  const { data, error } = await query.select("image_path");
+  if (error) throw error;
+  const names = (data ?? []).flatMap((r) => (r.image_path ? [r.image_path.split("/").pop()!] : []));
+  if (names.length) await deleteAdFiles(id, names).catch((e) => console.error("[campaigns] deleting ad files failed", e));
+  return { number: ad.number ?? 0, versions: data?.length ?? 0 };
+}
+
+type CommentRow = {
+  id: string;
+  x: number;
+  y: number;
+  body: string;
+  /** open → applied (by an edit) → resolved or unresolved (the user's answer). */
+  status: "open" | "applied" | "resolved" | "unresolved";
+  applied_ad_id: string | null;
+  created_at: string;
+};
+
+/** Pins a comment to a spot on one of the campaign's ads. */
+export async function addAdComment(
+  id: string,
+  adId: string,
+  comment: { x: number; y: number; body: string },
+): Promise<AdComment> {
+  if (!UUID.test(id) || !UUID.test(adId)) throw new Error("Unknown ad");
+  const { data, error } = await supabase()
+    .from("ad_comments")
+    .insert({ campaign_id: id, ad_id: adId, ...comment })
+    .select("id, x, y, body, status, applied_ad_id, created_at")
+    .single<CommentRow>();
+  if (error) throw error;
+  return {
+    id: data.id,
+    x: data.x,
+    y: data.y,
+    body: data.body,
+    status: data.status,
+    appliedAdId: data.applied_ad_id,
+    createdAt: data.created_at,
+  };
+}
+
+export async function deleteAdComment(id: string, commentId: string): Promise<void> {
+  if (!UUID.test(id) || !UUID.test(commentId)) throw new Error("Unknown comment");
+  const { error } = await supabase().from("ad_comments").delete().eq("campaign_id", id).eq("id", commentId);
+  if (error) throw error;
+}
+
+function toComments(rows: unknown): AdComment[] {
+  return ((rows ?? []) as CommentRow[])
+    .map((c) => ({
+      id: c.id,
+      x: c.x,
+      y: c.y,
+      body: c.body,
+      status: c.status,
+      appliedAdId: c.applied_ad_id,
+      createdAt: c.created_at,
+    }))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+/**
+ * The user's answer to "was it resolved?" for a comment an edit applied.
+ * Yes: it's done, so it's deleted. No: it's marked unresolved and re-opened
+ * as a new open comment at the same spot on the ad's newest version, ready
+ * to apply again.
+ */
+export async function reviewAdComment(id: string, commentId: string, resolved: boolean): Promise<void> {
+  if (!UUID.test(id) || !UUID.test(commentId)) throw new Error("Unknown comment");
+  const db = supabase();
+  const { data: comment, error } = await db
+    .from("ad_comments")
+    .select("id, x, y, body, status, applied_ad_id")
+    .eq("campaign_id", id)
+    .eq("id", commentId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!comment || comment.status !== "applied") throw new Error("That comment isn't waiting for review.");
+  if (resolved) {
+    const { error: deleteError } = await db.from("ad_comments").delete().eq("id", commentId);
+    if (deleteError) throw deleteError;
+    return;
+  }
+  const reviewed = { status: resolved ? "resolved" : "unresolved", reviewed_at: new Date().toISOString() };
+  const { error: updateError } = await db.from("ad_comments").update(reviewed).eq("id", commentId);
+  if (updateError) throw updateError;
+  if (resolved || !comment.applied_ad_id) return;
+
+  const { data: version } = await db.from("campaign_ads").select("number").eq("id", comment.applied_ad_id).maybeSingle();
+  const { data: newest } = await db
+    .from("campaign_ads")
+    .select("id")
+    .eq("campaign_id", id)
+    .eq("number", version?.number ?? -1)
+    .eq("status", "ready")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const { error: insertError } = await db.from("ad_comments").insert({
+    campaign_id: id,
+    ad_id: newest?.id ?? comment.applied_ad_id,
+    x: comment.x,
+    y: comment.y,
+    body: comment.body,
+  });
+  if (insertError) throw insertError;
 }
