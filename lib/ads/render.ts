@@ -37,6 +37,8 @@ export type AdRowInput = {
   tool_call_id: string | null;
   /** The agent run making it; stopping that run cancels it (see cancelRunAds). */
   run_id?: string | null;
+  /** The picked idea it makes, if any (shown in the studio). */
+  idea?: unknown;
   /** Set when it retries a failed ad, to take that ad's number; else the next one. */
   number?: number;
 };
@@ -47,6 +49,13 @@ export class AdStoppedError extends Error {
     super("stopped");
   }
 }
+
+/**
+ * Thrown when an ad was given up on while its run was still making it (see
+ * `expireStaleAds`): the row is already "failed" with this reason, and the
+ * run's result is thrown away. The tool reports it as a failure.
+ */
+export class AdExpiredError extends Error {}
 
 /**
  * Records an ad as "generating" (or reuses the row a retried tool call made).
@@ -65,23 +74,28 @@ export async function startAdRow(row: AdRowInput): Promise<{ id: string; number:
 }
 
 /**
- * A retry of an ad that failed (same headline and CTA, never made): deletes
- * the failed one and returns its number, so the retry takes its place
- * ("Ad 2" again) instead of leaving a broken ad in the list. Undefined when
- * there's nothing to replace. Never throws.
+ * A retry of an ad that failed (never made): the failed ad named by
+ * `retryOf`, else any with the same headline and CTA. Deletes it and returns
+ * its number, so the retry takes its place ("Ad 2" again) instead of leaving
+ * a broken ad in the list. Undefined when there's nothing to replace. Never
+ * throws.
  */
-export async function replaceFailedAd(campaignId: string, headline: string, cta: string): Promise<number | undefined> {
+export async function replaceFailedAd(
+  campaignId: string,
+  headline: string,
+  cta: string,
+  retryOf?: string,
+): Promise<number | undefined> {
   try {
     const db = supabase();
-    const { data } = await db
+    let query = db
       .from("campaign_ads")
       .select("id, number")
       .eq("campaign_id", campaignId)
-      .eq("headline", headline)
-      .eq("cta", cta)
       .eq("status", "failed")
-      .is("parent_id", null)
-      .order("created_at", { ascending: false });
+      .is("parent_id", null);
+    query = retryOf ? query.eq("id", retryOf) : query.eq("headline", headline).eq("cta", cta);
+    const { data } = await query.order("created_at", { ascending: false });
     if (!data?.length) return undefined;
     // Only ads with no other versions (a failed ad never got any).
     const ids = data.map((r) => r.id as string);
@@ -189,8 +203,12 @@ export async function storeAdImage(
     .select("id");
   if (!updated?.length) {
     await db.storage.from(AD_BUCKET).remove([path]);
+    const { data: row } = await db.from("campaign_ads").select("status, error").eq("id", adId).maybeSingle();
+    if (row?.status === "failed") throw new AdExpiredError(row.error ?? "it was stopped");
     throw new AdStoppedError();
   }
+  // Shown at once, before the tool call wraps up (an edit still writes its summary).
+  await broadcastAdActivity(campaignId);
   return { path };
 }
 
@@ -215,10 +233,17 @@ export async function uploadWithRetry(path: string, bytes: Uint8Array) {
  * Whether the run making this ad was stopped: its row was removed by the
  * stop route, or its run is no longer the campaign's active run (stopped
  * and replaced, or ended). A normal run is still active while its tools run.
+ * An ad given up on meanwhile (`expireStaleAds`) throws `AdExpiredError`
+ * with its reason instead.
  */
 export async function throwIfStopped(adId: string): Promise<void> {
   const db = supabase();
-  const { data: row } = await db.from("campaign_ads").select("campaign_id, run_id, status").eq("id", adId).maybeSingle();
+  const { data: row } = await db
+    .from("campaign_ads")
+    .select("campaign_id, run_id, status, error")
+    .eq("id", adId)
+    .maybeSingle();
+  if (row?.status === "failed") throw new AdExpiredError(row.error ?? "it was stopped");
   if (!row || row.status !== "generating") throw new AdStoppedError();
   if (!row.run_id) return;
   const { data: campaign } = await db.from("campaigns").select("agent_run_id").eq("id", row.campaign_id).maybeSingle();
@@ -302,7 +327,7 @@ export async function chooseProducts(kit: BrandKit, ids: string[], fallbackToHer
 }
 
 /** Whether a URL is a public image that fal will be able to fetch. */
-async function loads(url: string): Promise<boolean> {
+export async function loads(url: string): Promise<boolean> {
   if (!isPublicHttpUrl(url)) return false;
   try {
     const res = await fetch(url, { method: "GET", headers: { range: "bytes=0-0" }, signal: AbortSignal.timeout(6_000) });

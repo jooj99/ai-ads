@@ -6,7 +6,7 @@ import { generateText, Output } from "ai";
 import sharp from "sharp";
 import { z } from "zod";
 
-import { drawMarkers } from "@/lib/ads/markers";
+import { describeRegion, drawMarkers } from "@/lib/ads/markers";
 import { falImage, type FalImage } from "@/lib/ads/render";
 import { AD_BUCKET } from "@/lib/ads/store";
 import { supabase } from "@/lib/supabase/server";
@@ -35,7 +35,7 @@ import { supabase } from "@/lib/supabase/server";
 export const VERIFY_MODEL =
   process.env.VERIFY_MODEL ?? process.env.AGENT_MODEL ?? process.env.RESEARCH_MODEL ?? "anthropic/claude-sonnet-5.5";
 
-export type AdIssueKind = "logo" | "logo_box" | "fake_product" | "fake_screen";
+export type AdIssueKind = "logo" | "logo_box" | "fake_product" | "fake_screen" | "artifact" | "copy";
 
 export type AdIssue = {
   kind: AdIssueKind;
@@ -58,9 +58,9 @@ const issueSchema = z.object({
     .array(
       z.object({
         kind: z
-          .enum(["logo", "logo_box", "fake_product", "fake_screen"])
+          .enum(["logo", "logo_box", "fake_product", "fake_screen", "artifact", "copy"])
           .describe(
-            "logo: a logo in the ad (the ad's own logo, or one printed on a product, packaging or sign) that differs from the real logo or the product photos (shape, letterforms, colors, an added or missing wordmark), is garbled, or is missing (the ad should show the real logo). logo_box: the logo itself is right but looks pasted on: it sits in a box, panel, sticker or patch of solid color (often white or black) that isn't part of the ad's design, instead of being printed directly on the ad's background. fake_product: a product that isn't one of the reference products, or a reference product with anything changed: its color, print or pattern, shape, or a part moved, added, removed or attached differently (a grip loop, strap, handle, button, cutout or badge in a different place or form), or shown held or used in a way the reference photos don't show it working. fake_screen: a screen, dashboard, app interface, chart or data that isn't one of the reference screenshots.",
+            "logo: a logo in the ad (the ad's own logo, or one printed on a product, packaging or sign) that differs from the real logo or the product photos (shape, letterforms, colors, an added or missing wordmark), is garbled, or is missing (the ad should show the real logo). logo_box: the logo itself is right but looks pasted on: it sits in a box, panel, sticker or patch of solid color (often white or black) that isn't part of the ad's design, instead of being printed directly on the ad's background. fake_product: a product that isn't one of the reference products, or a reference product with anything changed: its color, print or pattern, shape, or a part moved, added, removed or attached differently (a grip loop, strap, handle, button, cutout or badge in a different place or form), or shown using a part it doesn't have (a strap it lacks, a loop where there is none). How it's held, worn or used, and the setting around it, are free: any use of its real parts is fine. fake_screen: a screen, dashboard, app interface, chart or data that isn't one of the reference screenshots. artifact: a leftover editing mark that isn't part of the design: a numbered circle or dot, a pin, a box drawn around something, an arrow, a label, stray digits or a watermark. copy: the headline or call-to-action isn't exactly the given text (a repeated, missing, extra or misspelled word, or it appears twice).",
           ),
         problem: z.string().describe("What's wrong, in one short sentence."),
         fix: z
@@ -101,6 +101,11 @@ export type VerifyInput = {
   /** The real product photos (or service screenshots) the ad was made from. */
   productUrls: string[];
   services: boolean;
+  /** False when the ad intentionally doesn't show the product (its images were only a style reference). */
+  productShown?: boolean;
+  /** The exact copy the ad must show, when known. */
+  headline?: string;
+  cta?: string;
 };
 
 /** The problems a vision model finds in the draft. Never throws: on failure it reports none (and logs). */
@@ -134,17 +139,25 @@ export async function verifyAd(input: VerifyInput): Promise<{ checked: boolean; 
           logo
             ? "Logo: the ad's logo must be the real logo above, exactly (same mark, letterforms, colors, no added or missing wordmark), legible and not garbled; a missing logo is a problem too. Logos printed on products must match the real logo and the product photos. It must also sit directly on the ad like printed artwork: the reference is shown on a plain background only so it's visible, so a box, panel or patch of solid color behind the ad's logo that doesn't belong to the design is a logo_box problem."
             : "Logo: there's no reference logo; only report a logo printed on a product that doesn't match the product photos."
-        } Products: everything the brand sells that appears must be one of the references, unchanged. Compare each product in the ad with its reference photos part by part: base color, print or pattern and its colors, shape and proportions, and every part: where it sits, its size and how it attaches (for example a finger loop lying flat down the middle of a case's back, not a strap hanging from its top edge), plus cutouts. Also check it's held or used the way the reference photos show it working. Each difference is its own fake_product problem; a product that's right except one moved part is still wrong.${
+        } ${
+          input.productShown === false
+            ? "This ad intentionally doesn't show the product: the references above are only its visual style. Abstract shapes, patterns and illustrations are fine and are not products. Only report something that's presented as one of the brand's products, devices or interfaces and isn't real (fake_product / fake_screen)."
+            : "Products: everything the brand sells that appears must be one of the references, unchanged."
+        } Compare each product in the ad with its reference photos part by part: base color, print or pattern and its colors, shape and proportions, and every part: where it sits, its size and how it attaches (for example a finger loop lying flat down the middle of a case's back, not a strap hanging from its top edge), plus cutouts. Don't report how it's held, worn, dangled or used, or the setting: staging is free, as long as it only uses parts the product really has. Each difference is its own fake_product problem; a product that's right except one moved part is still wrong.${
           input.services
             ? " This brand sells a service: any screen, dashboard or interface must be one of the reference screenshots; an invented one is a problem."
             : " An invented screen or dashboard is a problem too."
-        } Ignore the background, people, props, lighting, colors, the headline, the button and the layout. For each problem give the tight box around the object that's wrong and say what's in it.`,
+        } ${
+          input.headline
+            ? `Copy: the headline must read exactly "${input.headline}" and the button exactly "${input.cta ?? ""}", each once; a repeated, missing, extra or misspelled word is a copy problem (box the text). `
+            : ""
+        }Also report every leftover editing mark (numbered circles or dots, pins, drawn boxes, arrows, labels, stray digits, watermarks) as an artifact, each with its own box. Otherwise ignore the background, people, props, lighting, colors, the headline, the button and the layout. For each problem give the tight box around the object that's wrong and say what's in it.`,
       },
     ];
     const { output } = await generateText({
       model: VERIFY_MODEL,
       instructions:
-        "You are a strict brand-safety checker for ads made by an image model. You compare the ad with the brand's real logo and real product references and report only real problems: a logo that isn't the real one or looks pasted on, a fake or altered product, or an invented screen. Look at products closely: image models often keep a product's general look but recolor it, or move, reshape or reinvent one of its parts; those are real problems. Locate each problem precisely. Don't report style choices, and don't report something you can't see clearly.",
+        "You are a strict brand-safety checker for ads made by an image model. You compare the ad with the brand's real logo and real product references and report only real problems: a logo that isn't the real one or looks pasted on, a fake or altered product, or an invented screen. Look at products closely: image models often keep a product's general look but recolor it, or move, reshape or reinvent one of its parts; those are real problems. Creative staging (a new setting, pose or way of using it) is intended, not a problem. Locate each problem precisely. Don't report style choices, and don't report something you can't see clearly.",
       messages: [{ role: "user", content }],
       output: Output.object({ schema: issueSchema }),
     });
@@ -167,18 +180,22 @@ export async function verifyAd(input: VerifyInput): Promise<{ checked: boolean; 
 const FIX_SYSTEM_PROMPT = `You repair full-screen 9:16 portrait image ads. You are a retoucher: your output is image 1 with one problem fixed and nothing else changed.
 
 Rules:
-- Image 1 is the ad. Image 2 is the same ad with a numbered dashed pink box around the problem. Change only what's inside that box; everything outside it (framing, layout, background, lighting, people and poses, the headline and button with their wording, typeface, size and position) stays identical to image 1.
-- The box and number are only a guide: never draw boxes, circles or numbers.
+- Image 1 is the ad. Image 2, when attached, is the same ad with a dashed pink outline around the area to fix; its position is also given in words. Change only that area of image 1; everything else (framing, layout, background, lighting, people and poses, the headline and button with their wording, typeface, size and position) stays identical.
+- The outline is only a guide. Return image 1 itself, edited, and never draw outlines, boxes, circles, numbers, arrows, labels or other marks.
+- Leftover marks (numbered circles, pins, boxes, arrows, labels, stray digits or watermarks): remove them completely and fill each spot with what would naturally be behind it.
+- Copy: where the problem is the text, set the headline and the button text exactly as given in keep_exactly (each once, spelled exactly), in the same typeface, size, color and position.
 - The brand logo image, when attached, is the real logo: where the problem is a logo (the ad's own, or one printed on a product), reproduce it exactly as in that image (same mark, letterforms, colors, proportions) at the same place and a similar size, and remove any wrong logo or wordmark. The plain background its image may sit on isn't part of it: don't draw a box behind it.
 - A logo in a box (a panel or patch of solid color behind it that isn't part of the design): remove the box so the logo sits directly on the ad's background, like printed artwork, and keep the logo's letterforms, colors, position and size exactly.
 - Product photos or screenshots, when attached, are the real ones: where the problem is a product or screen, make it match them exactly (color, print, shape, and every part where it is and as it attaches), or remove what isn't real. Never invent a product, screen, dashboard or data.
-- Return the full ad at the same 9:16 size, not a crop.`;
+- Return the full ad at the same 9:16 size.`;
 
 /**
- * One repair edit for one problem: Nano Banana edits the ad with a numbered
- * box around the problem, its position in words, and (for a product, screen
- * or product logo) the real references. The ad and its marked copy go to fal
- * as short-lived signed URLs from our bucket.
+ * One repair edit for one problem: Nano Banana edits the ad, given a copy
+ * with a dashed outline around the problem (no number: one problem per
+ * edit, so there's less to copy), the position in words, and (for a logo,
+ * product or screen) the real references. A copied outline is caught by the
+ * next check as an `artifact` and removed. Images go to fal as short-lived
+ * signed URLs from our bucket.
  */
 export async function fixAd(input: {
   campaignId: string;
@@ -195,39 +212,44 @@ export async function fixAd(input: {
   const bucket = supabase().storage.from(AD_BUCKET);
   const token = randomUUID();
   const draftPath = `${input.campaignId}/check-${input.adId}-${token}.png`;
-  const markPath = `${input.campaignId}/marks-check-${input.adId}-${token}.png`;
+  const cropPath = `${input.campaignId}/marks-check-${input.adId}-${token}.png`;
   try {
-    const marked = await drawMarkers(input.draft.bytes, [{ n: 1, x: issue.x, y: issue.y, box: issue.box }]);
+    const crop = await drawMarkers(input.draft.bytes, [{ x: issue.x, y: issue.y, box: issue.box }]);
     const [a, b] = await Promise.all([
       bucket.upload(draftPath, input.draft.bytes, { contentType: "image/png", upsert: true }),
-      bucket.upload(markPath, marked, { contentType: "image/png", upsert: true }),
+      bucket.upload(cropPath, crop, { contentType: "image/png", upsert: true }),
     ]);
     if (a.error || b.error) throw a.error ?? b.error;
-    const signed = await bucket.createSignedUrls([draftPath, markPath], 15 * 60);
-    const [draftUrl, markUrl] = (signed.data ?? []).map((s) => s.signedUrl);
-    if (!draftUrl || !markUrl) throw new Error("couldn't sign the draft");
+    const signed = await bucket.createSignedUrls([draftPath, cropPath], 15 * 60);
+    const [draftUrl, cropUrl] = (signed.data ?? []).map((s) => s.signedUrl);
+    if (!draftUrl || !cropUrl) throw new Error("couldn't sign the draft");
 
-    const imageUrls = [draftUrl, markUrl];
-    const lines = ["image 1: the ad to repair", "image 2: the same ad with a numbered box around the problem (guide only)"];
+    // Text is fixed from the instruction alone: an image of the wrong text
+    // anchors the model to it (a repeated headline word came back unchanged).
+    const withCrop = issue.kind !== "copy";
+    const imageUrls = withCrop ? [draftUrl, cropUrl] : [draftUrl];
+    const lines = [
+      "image 1: the ad to repair (return this image, edited)",
+      ...(withCrop ? [`image 2: image 1 with a dashed outline around the area to fix (${describeRegion(issue.box)}; guide only)`] : []),
+    ];
     // A boxed logo is fixed without the logo image: that image is on a solid
     // background, which is how the box got there.
     if (issue.kind === "logo" && input.logoUrl) lines.push(`image ${imageUrls.push(input.logoUrl)}: the brand's real logo`);
     if (issue.kind === "fake_product" || issue.kind === "fake_screen") {
       for (const url of input.productUrls.slice(0, 6)) lines.push(`image ${imageUrls.push(url)}: a real product photo or screenshot`);
     }
-    const pct = (v: number) => `${Math.round(v * 100)}%`;
     const fix = {
       problem: issue.problem,
-      fix: issue.fix,
-      where: {
-        what: issue.where,
-        box_on_image_2: 1,
-        area: `from ${pct(issue.box.left)} to ${pct(issue.box.right)} across and ${pct(issue.box.top)} to ${pct(issue.box.bottom)} down`,
-      },
+      // Text needs an exact instruction: the model rewrites the lines as given.
+      fix:
+        issue.kind === "copy"
+          ? `The text is wrong: ${issue.problem} Change the headline so it reads exactly "${input.headline}" (delete any repeated or extra words or lines, add any missing ones), and the button so it reads exactly "${input.cta}". Keep the same typeface, weight, size, color and alignment; reflow the lines naturally.`
+          : issue.fix,
+      where: { what: issue.where, area_of_image_1: describeRegion(issue.box), ...(withCrop && { outlined_on: "image 2" }) },
       keep_exactly: {
         headline: input.headline,
         call_to_action: input.cta,
-        everything_outside_the_box: "as in image 1",
+        everything_else: "as in image 1",
       },
     };
     const prompt = `Repair image 1. Attached images, in order:
@@ -236,10 +258,66 @@ ${lines.map((l) => `- ${l}`).join("\n")}
 The problem to fix (JSON):
 ${JSON.stringify(fix, null, 2)}
 
-Fix only this, only inside the box. Don't draw the box or its number.`;
+Fix only this, only in that area. Return the whole of image 1, and don't draw the outline.`;
     return await falImage({ prompt, systemPrompt: FIX_SYSTEM_PROMPT, imageUrls }, input.adId);
   } finally {
-    await bucket.remove([draftPath, markPath]).catch(() => undefined);
+    await bucket.remove([draftPath, cropPath]).catch(() => undefined);
+  }
+}
+
+const artifactSchema = z.object({
+  marks: z
+    .array(
+      z.object({
+        what: z.string().describe("What the mark is and where, e.g. 'a red circle with the number 3 next to the logo'."),
+        left: fraction,
+        top: fraction,
+        right: fraction,
+        bottom: fraction,
+      }),
+    )
+    .max(10)
+    .describe("Every leftover mark. Empty when there are none."),
+});
+
+/**
+ * Leftover editing marks in an ad after an edit (numbered circles, pins,
+ * boxes, arrows, labels, stray digits), as `artifact` issues ready for fixAd.
+ * A cheaper, narrower check than verifyAd, for comment edits. Never throws.
+ */
+export async function findArtifacts(image: Uint8Array): Promise<AdIssue[]> {
+  try {
+    const ad = await prepare(image, 1024);
+    const { output } = await generateText({
+      model: VERIFY_MODEL,
+      instructions:
+        "You spot leftover editing marks in finished ads: numbered circles or dots, pins, dashed or solid boxes drawn around things, arrows, labels, stray digits or watermarks that aren't part of the design. The headline, the button, the logo, text printed on products and real design elements are not marks.",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "file", data: ad, mediaType: "image/jpeg" },
+            { type: "text", text: "List every leftover mark with a tight box around it." },
+          ],
+        },
+      ],
+      output: Output.object({ schema: artifactSchema }),
+    });
+    return output.marks.map((m) => {
+      const box = { left: Math.min(m.left, m.right), top: Math.min(m.top, m.bottom), right: Math.max(m.left, m.right), bottom: Math.max(m.top, m.bottom) };
+      return {
+        kind: "artifact" as const,
+        problem: `Leftover mark: ${m.what}.`,
+        fix: "Remove the mark completely and fill the spot with what would naturally be behind it.",
+        where: m.what,
+        box,
+        x: (box.left + box.right) / 2,
+        y: (box.top + box.bottom) / 2,
+      };
+    });
+  } catch (error) {
+    console.error("[ads] looking for leftover marks failed", error);
+    return [];
   }
 }
 
@@ -252,7 +330,11 @@ export function describeIssues(issues: AdIssue[]): string {
         ? "a box behind the logo"
         : k === "fake_product"
           ? "a product that wasn't right"
-          : "an invented screen",
+          : k === "artifact"
+            ? "leftover editing marks"
+            : k === "copy"
+              ? "text that wasn't exactly the headline or button copy"
+              : "an invented screen",
   );
   return kinds.length > 1 ? `${kinds.slice(0, -1).join(", ")} and ${kinds.at(-1)}` : (kinds[0] ?? "");
 }

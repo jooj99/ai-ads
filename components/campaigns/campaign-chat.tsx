@@ -1,7 +1,16 @@
 "use client";
 
 import type { ChatStatus, FileUIPart } from "ai";
-import { AlertTriangleIcon, BookOpenIcon, CheckIcon, Loader2Icon, RotateCwIcon, Trash2Icon, XIcon } from "lucide-react";
+import {
+  AlertTriangleIcon,
+  BookOpenIcon,
+  CheckIcon,
+  Loader2Icon,
+  PackageSearchIcon,
+  RotateCwIcon,
+  Trash2Icon,
+  XIcon,
+} from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import {
@@ -28,14 +37,22 @@ import {
 import { HeadlineChoice, type ChoiceSubmission } from "@/components/campaigns/headline-choice";
 import { Button } from "@/components/ui/button";
 import { InputGroupAddon } from "@/components/ui/input-group";
-import { RESEARCH_TOOL_PARTS, type AgentUIMessage } from "@/lib/agent/tools";
-import type { SavedHeadline } from "@/lib/campaigns";
+import { IdeaChoice } from "@/components/campaigns/idea-choice";
+import { RESEARCH_TOOL_PARTS, type AdIdea, type AgentUIMessage } from "@/lib/agent/tools";
+import type { SavedAd, SavedHeadline } from "@/lib/campaigns";
+import type { CatalogItem } from "@/lib/research/types";
 
-/** What the choice cards need: the saved headlines and how to submit a card. */
+/** What the cards need: saved headlines and products, and how to answer each card. */
 export type HeadlineControls = {
   saved: SavedHeadline[];
-  /** Saves the card's changes and sends them to the agent; `live` when it's waiting on this card. */
+  /** Old threads' headline cards: saves the card's changes and sends them; `live` when it's waiting on the card. */
   onSubmit: (toolCallId: string, live: boolean, submission: ChoiceSubmission) => Promise<boolean>;
+  /** The catalog, for product names and thumbnails on idea cards. */
+  products: CatalogItem[];
+  /** Saves picked ideas' headlines and sends the ideas to the agent; `live` when it's waiting on that card. */
+  onGenerate: (toolCallId: string, live: boolean, picked: AdIdea[]) => Promise<boolean>;
+  /** Opens the Products tab in select mode for a product question. */
+  onPickProducts: (toolCallId: string) => void;
 };
 
 /**
@@ -50,6 +67,7 @@ export function CampaignChat({
   campaignId,
   intro,
   messages,
+  ads,
   status,
   error,
   inputDisabledReason,
@@ -62,6 +80,8 @@ export function CampaignChat({
   /** Shown while the conversation is empty. */
   intro: ReactNode;
   messages: AgentUIMessage[];
+  /** The campaign's ads, so a generateAd/editAd call can show its ad's live stage. */
+  ads: SavedAd[];
   status: ChatStatus;
   error?: Error;
   /** Why the input is off right now (research running or failed), if it is. */
@@ -106,6 +126,45 @@ export function CampaignChat({
                             onSubmit={(submission) => headlines.onSubmit(part.toolCallId, live, submission)}
                           />
                         );
+                      case "tool-chooseProducts": {
+                        if (part.state === "output-available") {
+                          return (
+                            <p key={part.toolCallId} className="flex items-center gap-2 text-muted-foreground">
+                              <CheckIcon className="size-4 shrink-0" />
+                              {part.output.titles.length ? `Chose ${part.output.titles.join(", ")}` : "Answered in the chat"}
+                            </p>
+                          );
+                        }
+                        if (part.state !== "input-available") return null;
+                        const waiting = message === last && !busy;
+                        return (
+                          <div
+                            key={part.toolCallId}
+                            className="flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-background p-3"
+                          >
+                            <p className="text-sm font-medium">{part.input.question}</p>
+                            {waiting && (
+                              <Button size="sm" onClick={() => headlines.onPickProducts(part.toolCallId)}>
+                                <PackageSearchIcon />
+                                Pick in Products
+                              </Button>
+                            )}
+                          </div>
+                        );
+                      }
+                      case "tool-proposeIdeas": {
+                        const waiting = message === last && !busy && part.state === "input-available";
+                        return (
+                          <IdeaChoice
+                            key={part.toolCallId}
+                            part={part}
+                            live={waiting}
+                            streaming={current}
+                            products={headlines.products}
+                            onGenerate={(picked) => headlines.onGenerate(part.toolCallId, waiting, picked)}
+                          />
+                        );
+                      }
                       case "tool-saveHeadline":
                       case "tool-removeHeadline":
                         return part.state === "output-available" ? (
@@ -155,6 +214,7 @@ export function CampaignChat({
                             part={part}
                             live={current}
                             retry={isRetry(message.parts.slice(0, i), part)}
+                            ads={ads}
                           />
                         );
                       case "tool-readSkill":
@@ -320,6 +380,7 @@ const RESEARCH_LABELS: Record<string, string> = {
   findOfferingPages: "Choosing which pages to read",
   loadCatalog: "Loading the catalog",
   addProductFromLink: "Reading the product link",
+  findBrandVisuals: "Looking for the brand's graphics",
   removeProducts: "Removing items",
   writeBrandInsights: "Writing the value proposition, audience and voice",
   groupCatalog: "Grouping the catalog and picking heroes",
@@ -389,7 +450,7 @@ function isRetry(before: AgentUIMessage["parts"], part: AdPart): boolean {
   );
 }
 
-function AdRow({ part, live, retry }: { part: AdPart; live: boolean; retry: boolean }) {
+function AdRow({ part, live, retry, ads }: { part: AdPart; live: boolean; retry: boolean; ads: SavedAd[] }) {
   if (part.state === "output-available") {
     const { ok, summary, ad } = part.output;
     return (
@@ -411,20 +472,42 @@ function AdRow({ part, live, retry }: { part: AdPart; live: boolean; retry: bool
     );
   }
   if (!live || part.state === "output-error") return null; // interrupted before it finished
-  const headline = part.type === "tool-generateAd" ? part.input?.headline : undefined;
-  // A second try after a failure says so, so it doesn't look like a duplicate.
-  const text =
-    part.type === "tool-editAd"
-      ? retry
-        ? "Trying the new version again…"
-        : "Making a new version of the ad…"
-      : headline
-        ? `${retry ? "Trying again: the ad" : "Making the ad"} for “${headline}”…`
-        : "Making an ad…";
+  const { title, stage } = adProgress(part, retry, ads);
   return (
-    <p className="flex items-center gap-2 text-muted-foreground">
-      <Loader2Icon className="size-4 shrink-0 animate-spin" />
-      <Shimmer as="span">{text}</Shimmer>
-    </p>
+    <div className="flex items-start gap-2 text-muted-foreground">
+      <Loader2Icon className="mt-0.5 size-4 shrink-0 animate-spin" />
+      <span className="flex min-w-0 flex-col gap-0.5">
+        <span className="text-foreground/80">{title}</span>
+        <Shimmer as="span" className="text-xs">{`${stage}…`}</Shimmer>
+      </span>
+    </div>
   );
+}
+
+/**
+ * What a running generateAd/editAd call says: which ad it is (a new one, a
+ * retry, or which version of which ad is being edited) and the stage its ad
+ * row reports live ("Drafting the image", "Fixing the logo (round 1 of 3)",
+ * "Applying 2 comments"), matched by the call's id.
+ */
+function adProgress(part: AdPart, retry: boolean, ads: SavedAd[]): { title: string; stage: string } {
+  const row = ads.find((a) => a.toolCallId === part.toolCallId);
+  const done = row?.status === "ready" ? "Done, wrapping up" : undefined;
+  if (part.type === "tool-editAd") {
+    const base = ads.find((a) => a.id === part.input?.adId);
+    const versions = base ? ads.filter((a) => a.number === base.number && a.status === "ready") : [];
+    const v = base ? [...versions].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).findIndex((a) => a.id === base.id) + 1 : 0;
+    const which = base ? `Ad ${base.number}${v ? ` (v${v})` : ""}` : "the ad";
+    return {
+      title: retry ? `Trying the edit to ${which} again` : `Editing ${which}`,
+      stage: done ?? row?.stage ?? "Getting the edit ready",
+    };
+  }
+  const headline = part.input?.headline;
+  const again = retry || Boolean(part.input?.retryOf);
+  const which = row?.number ? `Ad ${row.number}` : "the ad";
+  return {
+    title: `${again ? `Trying ${which} again` : `Making ${which}`}${headline ? `: “${headline}”` : ""}`,
+    stage: done ?? row?.stage ?? "Writing the brief",
+  };
 }

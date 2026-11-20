@@ -47,8 +47,8 @@ export function ChatStart({
     : hasKit
       ? [
           <MessageSquarePlusIcon key="i" className="mt-0.5 size-4 shrink-0" />,
-          `Research on ${domain} is done. Ask the agent for headline ideas, or tell it what you want.`,
-          { label: "Get headline ideas", run: onStartChat, Icon: MessageSquarePlusIcon },
+          `Research on ${domain} is done. Pick the products to advertise and the agent will pitch ad ideas, or tell it what you want.`,
+          { label: "Pick products for ads", run: onStartChat, Icon: MessageSquarePlusIcon },
         ]
       : [
           <SearchIcon key="i" className="mt-0.5 size-4 shrink-0" />,

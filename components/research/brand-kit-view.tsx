@@ -3,7 +3,7 @@
 /* eslint-disable @next/next/no-img-element -- logos and product photos come from
    each store's own CDN (any host), so they're shown as plain images. */
 
-import { CheckIcon, PencilIcon, PlusIcon, StarIcon, XIcon } from "lucide-react";
+import { CheckIcon, PencilIcon, PlusIcon, SearchIcon, StarIcon, XIcon } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -189,6 +189,25 @@ export function BrandKitView({
           )}
         </Section>
       </div>
+
+      {/* The brand's own graphics, found by research, for minimal brand-graphic ads. */}
+      {(kit.visuals?.length ?? 0) > 0 && (
+        <Section title="Brand visuals" source="site" edited={isEdited(kit, "visuals")}>
+          <ul className="grid grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] gap-3">
+            {kit.visuals!.map((visual) => (
+              <li key={visual.url} className="flex flex-col gap-1.5">
+                <img
+                  src={thumbnail(visual.url, 320)}
+                  alt={visual.description}
+                  loading="lazy"
+                  className="aspect-[4/3] w-full rounded-lg bg-muted object-cover ring-1 ring-foreground/10"
+                />
+                <span className="line-clamp-2 text-xs text-muted-foreground">{visual.description}</span>
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
 
       {/* Audience and voice share a row too. */}
       <div className="grid gap-4 @lg:grid-cols-2">
@@ -521,7 +540,39 @@ const HERO = "hero";
  * Heroes sort first and carry their features; every other item shows its
  * photo, type and price.
  */
-export function ProductPicks({ kit, pending }: { kit: BrandKit; pending: boolean }) {
+/**
+ * Select mode for the Products tab: the agent asked which products to
+ * advertise (its `chooseProducts` question), and the tiles become toggles.
+ */
+export type ProductSelect = {
+  question: string;
+  selected: string[];
+  onToggle: (id: string) => void;
+  onSubmit: () => void;
+  onCancel: () => void;
+};
+
+/** Whether an item matches a search: every word appears in its title, type, tags or description. */
+function matches(item: CatalogItem, query: string) {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return true;
+  const text = [item.title, item.typeName, item.productType, ...(item.tags ?? []), item.description]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return words.every((w) => text.includes(w));
+}
+
+export function ProductPicks({
+  kit,
+  pending,
+  select,
+}: {
+  kit: BrandKit;
+  pending: boolean;
+  /** Present while the agent is waiting for the user to pick products. */
+  select?: ProductSelect;
+}) {
   const services = kit.offering === "services";
   const noun = services ? "service" : "product";
   const heroes = new Map(kit.products.map((p) => [p.id, p]));
@@ -543,12 +594,14 @@ export function ProductPicks({ kit, pending }: { kit: BrandKit; pending: boolean
 
   const [filter, setFilter] = useState<string>(ALL);
   const [limit, setLimit] = useState(PAGE_SIZE);
+  const [query, setQuery] = useState("");
   const active = filter === ALL || filter === HERO || rank.has(filter) ? filter : ALL;
 
   const visible = catalog
     .filter((i) =>
       active === ALL ? true : active === HERO ? heroes.has(i.id) : i.typeName === active,
     )
+    .filter((i) => matches(i, query))
     .sort(
       (a, b) =>
         Number(heroes.has(b.id)) - Number(heroes.has(a.id)) ||
@@ -566,8 +619,44 @@ export function ProductPicks({ kit, pending }: { kit: BrandKit; pending: boolean
     ...typeOrder.map((t) => ({ id: t, label: t, count: countOf(t) })),
   ];
 
+  const picked = select ? catalog.filter((i) => select.selected.includes(i.id)) : [];
+
   return (
     <Card className="gap-4">
+      {select && (
+        // The agent's question, pinned while the user picks.
+        <div className="sticky top-0 z-10 -mt-1 mx-4 flex flex-col gap-3 rounded-xl bg-foreground p-3 text-background shadow-md @lg:mx-6 @2xl:flex-row @2xl:items-center">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium">{select.question}</p>
+            <p className="line-clamp-2 text-xs text-background/70">
+              {picked.length
+                ? picked.map((i) => i.title).join(", ")
+                : `Tap the ${noun}s to feature, then confirm. Or answer in the chat.`}
+            </p>
+          </div>
+          <div className="flex shrink-0 justify-end gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="text-background hover:bg-background/15 hover:text-background"
+              onClick={select.onCancel}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              className="bg-background text-foreground hover:bg-background/90"
+              disabled={!picked.length}
+              onClick={select.onSubmit}
+            >
+              <CheckIcon />
+              {picked.length ? `Use ${picked.length === 1 ? "this" : `these ${picked.length}`}` : `Pick ${noun}s`}
+            </Button>
+          </div>
+        </div>
+      )}
       <CardHeader className="flex flex-row items-start justify-between gap-2">
         <div className="flex flex-col gap-1">
           <CardTitle className="flex items-center gap-2">
@@ -601,6 +690,32 @@ export function ProductPicks({ kit, pending }: { kit: BrandKit; pending: boolean
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
         {catalog.length > 0 && (
+          <label className="flex h-9 items-center gap-2 rounded-full bg-muted px-3 ring-1 ring-foreground/10 focus-within:ring-2 focus-within:ring-foreground/30">
+            <SearchIcon className="size-4 shrink-0 text-muted-foreground" />
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setLimit(PAGE_SIZE);
+              }}
+              placeholder={`Search ${catalog.length} ${noun}s`}
+              aria-label={`Search ${noun}s`}
+              className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+            />
+            {query && (
+              <button
+                type="button"
+                aria-label="Clear search"
+                className="text-muted-foreground hover:text-foreground"
+                onClick={() => setQuery("")}
+              >
+                <XIcon className="size-4" />
+              </button>
+            )}
+          </label>
+        )}
+        {catalog.length > 0 && (
           <div className="flex flex-wrap gap-1.5" role="group" aria-label={`Filter ${noun}s`}>
             {chips.map((chip) => (
               <Button
@@ -624,7 +739,14 @@ export function ProductPicks({ kit, pending }: { kit: BrandKit; pending: boolean
           <>
             <ul className="grid gap-x-4 gap-y-6 @md:grid-cols-2 @3xl:grid-cols-3">
               {visible.slice(0, limit).map((item) => (
-                <ProductCard key={item.id} item={item} hero={heroes.get(item.id)} />
+                <ProductCard
+                  key={item.id}
+                  item={item}
+                  hero={heroes.get(item.id)}
+                  selectable={
+                    select && { on: select.selected.includes(item.id), toggle: () => select.onToggle(item.id) }
+                  }
+                />
               ))}
             </ul>
             {visible.length > limit && (
@@ -638,6 +760,8 @@ export function ProductPicks({ kit, pending }: { kit: BrandKit; pending: boolean
               </Button>
             )}
           </>
+        ) : query ? (
+          <Empty>No {noun}s match “{query}”.</Empty>
         ) : pending ? (
           <div className="grid gap-4 @md:grid-cols-2 @3xl:grid-cols-3">
             {Array.from({ length: 3 }, (_, i) => (
@@ -658,19 +782,33 @@ export function ProductPicks({ kit, pending }: { kit: BrandKit; pending: boolean
   );
 }
 
-function ProductCard({ item, hero }: { item: CatalogItem; hero?: SelectedProduct }) {
+function ProductCard({
+  item,
+  hero,
+  selectable,
+}: {
+  item: CatalogItem;
+  hero?: SelectedProduct;
+  /** In select mode the tile toggles instead of opening the product page. */
+  selectable?: { on: boolean; toggle: () => void };
+}) {
   const [broken, setBroken] = useState(false);
   // Wide packshots (eyeglasses, shoes) get cropped by a portrait frame; show those whole.
   const [wide, setWide] = useState(false);
   const image = (hero ?? item).images[0];
+  const Tile = selectable ? "button" : "a";
+  const tileProps = selectable
+    ? { type: "button" as const, onClick: selectable.toggle, "aria-pressed": selectable.on, "aria-label": `Select ${item.title}` }
+    : { href: item.url, target: "_blank", rel: "noreferrer" };
 
   return (
     <li className="flex flex-col gap-3">
-      <a
-        href={item.url}
-        target="_blank"
-        rel="noreferrer"
-        className="relative block overflow-hidden rounded-lg bg-muted ring-1 ring-foreground/10"
+      <Tile
+        {...tileProps}
+        className={cn(
+          "relative block w-full overflow-hidden rounded-lg bg-muted text-left ring-1 ring-foreground/10 transition-shadow",
+          selectable?.on && "ring-[3px] ring-foreground",
+        )}
       >
         {image && !broken ? (
           <img
@@ -702,12 +840,26 @@ function ProductCard({ item, hero }: { item: CatalogItem; hero?: SelectedProduct
             Hero
           </Badge>
         )}
-        {item.origin && item.origin !== "research" && (
-          <Badge variant="secondary" className="absolute top-2 right-2 font-normal shadow-sm">
-            {item.origin === "agent" ? "Added by agent" : "Added by you"}
-          </Badge>
+        {selectable ? (
+          <span
+            className={cn(
+              "absolute top-2 right-2 flex size-6 items-center justify-center rounded-full shadow-sm ring-1 transition",
+              selectable.on
+                ? "bg-foreground text-background ring-foreground"
+                : "bg-background/90 text-transparent ring-foreground/20",
+            )}
+          >
+            <CheckIcon className="size-4" />
+          </span>
+        ) : (
+          item.origin &&
+          item.origin !== "research" && (
+            <Badge variant="secondary" className="absolute top-2 right-2 font-normal shadow-sm">
+              {item.origin === "agent" ? "Added by agent" : "Added by you"}
+            </Badge>
+          )
         )}
-      </a>
+      </Tile>
       {item.typeName && (
         <span className="-mb-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
           {item.typeName}

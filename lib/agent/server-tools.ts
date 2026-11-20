@@ -17,7 +17,7 @@ export const AGENT_MODEL =
 /**
  * The server side of every agent tool for one campaign, by name. The durable
  * agent (workflows/agent.ts) runs each call as its own workflow step through
- * `executeServerTool`; `proposeHeadlines` has no entry because it runs in
+ * `executeServerTool`; the pause tools (`chooseProducts`, `proposeIdeas`) have no entry because they run in
  * the browser (the choice card).
  *
  * `runId` is the agent run making the call, so research tools know whether
@@ -101,5 +101,5 @@ ${skill.body}
 
 # Now
 
-Research ${research.campaign.domain} for this campaign: work through the full-run checklist above, then hand off with a short summary and proposeHeadlines.`;
+Research ${research.campaign.domain} for this campaign: work through the full-run checklist above, then hand off with a short summary and chooseProducts.`;
 }

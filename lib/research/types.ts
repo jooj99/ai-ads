@@ -77,6 +77,13 @@ export type BrandFont = {
  * fonts, products and their images) come straight from the site; the copy
  * fields (value proposition, audience, voice) are inferred by the model.
  */
+/** A graphic from the brand's own site (3D shapes, a mascot, an illustration, a pattern) that ads can use. */
+export type BrandVisual = {
+  url: string;
+  /** What it shows, in a few words, e.g. "glassy pastel jelly-like 3D shapes". */
+  description: string;
+};
+
 export type BrandKit = {
   sourceUrl: string;
   domain: string;
@@ -85,6 +92,8 @@ export type BrandKit = {
   tagline?: string;
   logo?: string;
   logoCandidates: string[];
+  /** The brand's own graphics, found and classified by research (see lib/research/visuals.ts). */
+  visuals?: BrandVisual[];
   colors: BrandColor[];
   fonts: BrandFont[];
   valueProposition?: string;

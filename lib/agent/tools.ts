@@ -5,13 +5,17 @@ import { z } from "zod";
  * The ad agent's tools, shared by the chat route (server) and the chat UI
  * (client), so tool parts in messages are typed on both sides.
  *
- * - `proposeHeadlines` has no `execute`: it's the human-in-the-loop pause.
- *   The model calls it and the UI renders the options as a choice card.
- *   Ticking options (or writing your own) is a local selection until the
- *   user presses Submit, which saves it to `campaign_headlines` and sends it
- *   to the agent: as this tool's output when the agent is waiting on the
- *   card, or as a chat message for an older card. Cards stay usable after
- *   the conversation moves on.
+ * - The human-in-the-loop pauses have no `execute`: the model calls them and
+ *   the run ends waiting on the user, whose answer becomes the tool output
+ *   (sent by the page) and starts the next turn:
+ *   - `chooseProducts`: the agent asks which products to advertise; the page
+ *     switches to the Products tab in select mode.
+ *   - `proposeIdeas`: about 5 creative ad ideas for those products, shown as
+ *     cards in the chat; the user ticks some and presses Generate, which
+ *     saves each picked idea's headline + CTA to `campaign_headlines` and
+ *     sends the picks to the agent (a chat message for an older card).
+ *   - `proposeHeadlines`: the old headline card. Kept only so old threads
+ *     still render; the model no longer gets it (workflows/agent.ts).
  * - `saveHeadline` / `removeHeadline` run on the server (the route adds
  *   `execute`), for when the user asks for changes in chat.
  * - `generateAd` makes one 9:16 ad on fal (server-side, `lib/ads/generate.ts`);
@@ -61,6 +65,87 @@ export const proposeHeadlinesSpec = tool({
       ),
     /** Previously saved headlines the user unticked on this card before submitting. */
     removed: z.array(copy).optional(),
+  }),
+});
+
+/**
+ * One creative ad idea. The card shows the title, `pitch`, copy and style;
+ * `direction` is the detailed art direction for the image model. Older idea
+ * cards had `concept` / `scene` / `showsOff` instead; they're optional so
+ * those threads still load.
+ */
+export const adIdea = z.object({
+  title: z.string().describe('A few words naming the idea, e.g. "Coffee-shop dangle" or "Bold claim on brand blue".'),
+  style: z
+    .enum(["scene", "minimal"])
+    .optional()
+    .describe(
+      'Required. "scene": a photographic moment (a setting, people, the product in use). "minimal": a clean graphic ad on a plain or soft brand-color background with a big headline, the logo, lots of space and at most one graphic element; the product may or may not appear.',
+    ),
+  visual: z
+    .enum(["product", "brand_graphic", "none"])
+    .optional()
+    .describe(
+      'Required. The ad\'s visual: "product" shows the product itself; "brand_graphic" uses the brand\'s own graphics from its website (3D shapes, mascot-like objects, illustrations) as the one visual element, without the product; "none" is type only. For software and services, "brand_graphic" is usually the strongest minimal choice.',
+    ),
+  showProduct: z.boolean().optional().describe("Older ideas only; use visual."),
+  pitch: z
+    .string()
+    .optional()
+    .describe(
+      "Required. 1–3 short sentences for the user: what the ad shows and why it works for this audience. This is all the card shows, so keep it tight.",
+    ),
+  direction: z
+    .string()
+    .optional()
+    .describe(
+      "Required. Art direction for the image model (not shown to the user): composition, background, what's in frame, how the product is shown (or that it isn't), type placement, mood and light. Specific, 2–5 sentences.",
+    ),
+  concept: z.string().optional().describe("Older ideas only; use pitch."),
+  scene: z.string().optional().describe("Older ideas only; use direction."),
+  showsOff: z.string().optional().describe("Older ideas only."),
+  headline: z.string().describe("The headline, at most about 8 words, playing off the image, in the brand's voice. No emojis."),
+  cta: z.string().describe('The call-to-action button text, 1–3 words, e.g. "Shop now". No emojis.'),
+  productIds: z.array(z.string()).min(1).max(3).describe("Catalog ids of the chosen products this idea is about (even when the product isn't shown)."),
+});
+export type AdIdea = z.infer<typeof adIdea>;
+/** The creative direction generateAd passes to the image model. */
+export const ideaDirection = adIdea.pick({
+  title: true,
+  style: true,
+  visual: true,
+  showProduct: true,
+  pitch: true,
+  direction: true,
+  concept: true,
+  scene: true,
+  showsOff: true,
+});
+export type IdeaDirection = z.infer<typeof ideaDirection>;
+
+export const chooseProductsSpec = tool({
+  description:
+    "Ask the user which products (or services) to make ads about. The page opens the Products tab, where they tick some and confirm. Write your question in text too. They may answer in chat instead; then the result is empty and you match what they wrote.",
+  inputSchema: z.object({
+    question: z.string().describe('A short question for the selection bar, e.g. "Which cases should these ads feature?"'),
+  }),
+  outputSchema: z.object({
+    productIds: z.array(z.string()).describe("Catalog ids the user selected. Empty when they answered in chat."),
+    titles: z.array(z.string()).describe("Their names, in the same order."),
+  }),
+});
+
+export const proposeIdeasSpec = tool({
+  description:
+    "Show the user about 5 creative ad ideas for the chosen products as cards. They tick the ones to make and press Generate. Don't repeat the ideas in your text.",
+  inputSchema: z.object({
+    productIds: z.array(z.string()).min(1).max(6).describe("The chosen products these ideas are for."),
+    ideas: z.array(adIdea).min(3).max(6),
+  }),
+  outputSchema: z.object({
+    picked: z
+      .array(adIdea)
+      .describe("The ideas the user chose to make, each saved as a headline just now. Empty when they replied in chat instead."),
   }),
 });
 
@@ -156,7 +241,7 @@ const references = z
 
 export const generateAdSpec = tool({
   description:
-    "Generate one full-screen 9:16 portrait image ad for a saved headline and CTA, built on real product photos with Nano Banana Pro. It takes about a minute. The brand's colors, fonts and voice are applied automatically. Call it once per headline; several calls in the same step run in parallel.",
+    "Generate one full-screen 9:16 portrait image ad for a saved headline and CTA (usually a picked idea's), built on real product photos with Nano Banana Pro, following the idea's creative direction when given. It takes about a minute. The brand's colors, fonts and voice are applied automatically. Call it once per idea; several calls in the same step run in parallel.",
   inputSchema: z.object({
     headline: z.string().min(1).max(80).describe("A saved headline, exactly as saved."),
     cta: z.string().min(1).max(30).describe("Its CTA, exactly as saved."),
@@ -167,6 +252,13 @@ export const generateAdSpec = tool({
       .optional()
       .describe("Catalog ids (from the catalog in your instructions, getCatalog or addProductFromLink) of 1–2 products whose photos suit this headline; the item the user asked for when they named one or linked to it. Defaults to the first hero."),
     references,
+    idea: ideaDirection
+      .optional()
+      .describe("The picked idea this ad makes: its title, style, visual, pitch and direction, as on the card. Pass it whenever the ad comes from an idea."),
+    retryOf: z
+      .string()
+      .optional()
+      .describe("When retrying a failed ad: its id (from the failed ads in your instructions). The new ad takes its place and number, and reuses its products and idea unless you pass others."),
   }),
   outputSchema: adResult,
 });
@@ -204,6 +296,11 @@ export const editAdSpec = tool({
           .max(3)
           .optional()
           .describe("Catalog ids of products whose photos to send (e.g. to swap or fix a product)."),
+        visuals: z
+          .array(z.number().int().min(1))
+          .max(3)
+          .optional()
+          .describe("Brand visuals to send, by their number in the brand visuals list (V1 = 1): the brand's own graphics, e.g. to add or swap in one of its shapes or illustrations."),
         fonts: z.boolean().optional().describe("Send the brand font names."),
         voice: z.boolean().optional().describe("Send the brand voice (traits and description)."),
       })
@@ -307,6 +404,12 @@ export const researchToolSpecs = {
     inputSchema: z.object({ url: z.string().url().describe("The product page link, exactly as the user gave it.") }),
     outputSchema: researchResult,
   }),
+  findBrandVisuals: tool({
+    description:
+      "Find the brand's own graphics on its site (3D shapes, a mascot, illustrations, patterns; never customer logos, people or products) and save them to the kit as brand visuals, for minimal ads with a brand graphic. Needs the homepage read.",
+    inputSchema: z.object({}),
+    outputSchema: researchResult,
+  }),
   removeProducts: tool({
     description: "Remove items from the catalog by id.",
     inputSchema: z.object({ ids: z.array(z.string()).min(1).max(100) }),
@@ -350,6 +453,9 @@ export const researchToolSpecs = {
 export type ResearchToolName = keyof typeof researchToolSpecs;
 
 export const agentToolSpecs = {
+  chooseProducts: chooseProductsSpec,
+  proposeIdeas: proposeIdeasSpec,
+  /** Old threads only: not offered to the model. */
   proposeHeadlines: proposeHeadlinesSpec,
   saveHeadline: saveHeadlineSpec,
   removeHeadline: removeHeadlineSpec,
@@ -378,12 +484,20 @@ export const RESEARCH_TOOL_PARTS = new Set(Object.keys(researchToolSpecs).map((n
 
 export type AgentUIMessage = UIMessage<never, never, InferUITools<typeof agentToolSpecs>>;
 
-/** The headline question the agent is waiting on, if the thread is paused on one. */
+/** The tools that pause the run until the user answers (no server `execute`). */
+export const PAUSE_TOOLS = new Set(["chooseProducts", "proposeIdeas", "proposeHeadlines"]);
+
+/** The question the agent is waiting on (a product pick, an idea card or an old headline card), if the thread is paused on one. */
 export function pendingChoice(messages: AgentUIMessage[]) {
   const last = messages.at(-1);
   if (last?.role !== "assistant") return null;
   for (const part of last.parts) {
-    if (part.type === "tool-proposeHeadlines" && part.state === "input-available") return part;
+    if (
+      (part.type === "tool-chooseProducts" || part.type === "tool-proposeIdeas" || part.type === "tool-proposeHeadlines") &&
+      part.state === "input-available"
+    ) {
+      return part;
+    }
   }
   return null;
 }

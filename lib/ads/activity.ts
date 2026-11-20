@@ -1,5 +1,6 @@
 import "server-only";
 
+import { broadcastAdsChanged } from "@/lib/ads/stage";
 import { CAMPAIGNS_TOPIC, EVENTS, type AdActivity } from "@/lib/realtime";
 import { supabase } from "@/lib/supabase/server";
 
@@ -7,10 +8,10 @@ import { supabase } from "@/lib/supabase/server";
  * Per campaign, for the Campaigns list: ads in progress ("Making 2 ads…")
  * and how many finished ads it has ("3 ads": ads with a ready version, each
  * counted once however many versions it has). A row still "generating" after
- * 5 minutes died with its run and isn't counted (the studio treats it the
- * same way).
+ * 10 minutes is given up on (`expireStaleAds` marks it failed on the next
+ * read) and isn't counted.
  */
-const STUCK_MS = 5 * 60_000;
+const STUCK_MS = 10 * 60_000;
 
 export async function adActivity(campaignIds?: string[]): Promise<Map<string, AdActivity>> {
   let query = supabase()
@@ -39,8 +40,13 @@ export async function adActivity(campaignIds?: string[]): Promise<Map<string, Ad
   return activity;
 }
 
-/** Tells the Campaigns list a campaign's ads in progress changed (an ad started, finished, failed or stopped). Never throws. */
+/**
+ * Tells the Campaigns list a campaign's ads in progress changed (an ad
+ * started, finished, failed or stopped), and the campaign's page to re-read
+ * its ads. Never throws.
+ */
 export async function broadcastAdActivity(campaignId: string): Promise<void> {
+  await broadcastAdsChanged(campaignId);
   try {
     const ads = (await adActivity([campaignId])).get(campaignId) ?? { making: 0, editing: 0, total: 0 };
     await supabase()

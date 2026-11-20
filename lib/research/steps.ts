@@ -27,6 +27,7 @@ import { classifyOffering as classifyOfferingCall } from "./offering";
 import { researchPage, type PageResearch } from "./page";
 import { detectShopify, fetchShopifyCatalog, type ShopifyStore } from "./shopify";
 import { pageKey, type CatalogEntry, type ResearchSession } from "./state";
+import { classifyVisuals, visualCandidates } from "./visuals";
 import { isPublicHttpUrl } from "./url";
 import { MAX_PRODUCT_TYPES, type Offering, type Product, type ProductType } from "./types";
 
@@ -319,6 +320,32 @@ export async function addProductFromLink(
     ok: true,
     summary: `${existing ? "Found photos for" : "Added"} "${product.title}" with ${product.images.length} photo${product.images.length === 1 ? "" : "s"}`,
     data: { id: product.id, title: product.title, price: product.price, photos: product.images.length },
+  };
+}
+
+/**
+ * Finds the brand's own graphics (3D shapes, a mascot, illustrations,
+ * patterns) on its site and saves the best as the kit's `visuals`, for
+ * minimal ads that use a brand graphic instead of the product. A vision
+ * model decides what each candidate image is, so customer logos, people,
+ * products and screenshots are left out whatever the files are called.
+ */
+export async function findBrandVisuals({ session, progress }: StepContext): Promise<StepResult> {
+  const page = await homepage(session);
+  progress?.("Looking for the brand's graphics");
+  const candidates = await visualCandidates(session.kit.sourceUrl, page.shareImage, session.catalog);
+  const visuals = await classifyVisuals(session.kit.name ?? session.kit.domain, candidates);
+  const changed = session.patchKit({ visuals });
+  await session.saveKit();
+  if (!changed.includes("visuals")) {
+    return { ok: true, summary: "Brand visuals were edited, so they were kept", data: { found: visuals.length } };
+  }
+  return {
+    ok: true,
+    summary: visuals.length
+      ? `Found ${visuals.length} brand graphic${visuals.length === 1 ? "" : "s"}: ${visuals.map((v) => v.description).join("; ")}`
+      : `No brand graphics among ${candidates.length} images (minimal ads will be typographic or show the product)`,
+    data: { found: visuals.length, checked: candidates.length },
   };
 }
 
@@ -621,6 +648,10 @@ export async function researchStatus({ session }: StepContext): Promise<StepResu
         ? "missing: call groupCatalog"
         : "waiting for the catalog",
     photos: heroesWithoutPhotos ? `${heroesWithoutPhotos} hero(es) without photos: call findPhotos` : "done",
+    // Not every brand has graphics, so this never blocks.
+    brandVisuals: kit.visuals?.length
+      ? `done (${kit.visuals.length})`
+      : "none yet: call findBrandVisuals if you haven't (some brands have none)",
   };
   const missing = Object.entries(checklist)
     .filter(([, v]) => v.startsWith("missing"))

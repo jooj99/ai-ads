@@ -22,7 +22,11 @@ export async function GET(req: Request, ctx: RouteContext<"/api/campaigns/[id]/c
   if (!Number.isSafeInteger(startIndex) || startIndex < 0) {
     return Response.json({ error: "startIndex must be a non-negative integer" }, { status: 400 });
   }
-  const readable = getRun(target)
+  // A run that no longer exists (a wiped local dev database) has nothing to
+  // follow; reading it would wait forever and leave the chat "Thinking…".
+  const run = getRun(target);
+  if (!(await run.exists.catch(() => true))) return new Response(null, { status: 204 });
+  const readable = run
     .getReadable({ startIndex: 0 })
     .pipeThrough(createModelCallToUIChunkTransform({ uiStartIndex: startIndex }));
   return createUIMessageStreamResponse({ stream: readable, headers: { "x-workflow-run-id": target } });

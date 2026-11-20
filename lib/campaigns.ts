@@ -11,6 +11,7 @@ import type {
   SelectedProduct,
 } from "@/lib/research/types";
 import { adActivity } from "@/lib/ads/activity";
+import { expireStaleAds } from "@/lib/ads/expire";
 import { adImageUrl, deleteAdFiles } from "@/lib/ads/store";
 import type { AdActivity } from "@/lib/realtime";
 import { deleteFontFiles } from "@/lib/research/font-store";
@@ -97,6 +98,7 @@ export async function listCampaigns(): Promise<CampaignSummary[]> {
     .order("created_at", { ascending: false })
     .limit(100);
   if (error) throw error;
+  await expireStaleAds(); // ads that can't finish any more aren't "Making…"
   const adsAt = new Date().toISOString();
   const activity = await adActivity((data ?? []).map((row) => row.id as string)).catch(() => new Map<string, AdActivity>());
   return (data ?? []).map((row) => {
@@ -148,6 +150,7 @@ export async function getCampaignResearch(id: string): Promise<CampaignResearch 
           tagline: k.tagline ?? undefined,
           logo: k.logo_url ?? undefined,
           logoCandidates: k.logo_candidates ?? [],
+          visuals: k.visuals ?? [],
           colors: k.colors ?? [],
           fonts: k.fonts ?? [],
           valueProposition: k.value_proposition ?? undefined,
@@ -205,6 +208,7 @@ export function kitRow(campaignId: string, kit: BrandKit) {
     offering_reason: kit.offeringReason ?? null,
     logo_url: kit.logo ?? null,
     logo_candidates: kit.logoCandidates,
+    visuals: kit.visuals ?? [],
     colors: kit.colors,
     fonts: kit.fonts,
     value_proposition: kit.valueProposition ?? null,
@@ -454,6 +458,10 @@ export type SavedAd = {
   issues: string[];
   /** Repair rounds the check ran on it (0–3). */
   fixRounds: number;
+  /** The picked idea it was made from, if any. */
+  idea: { title: string; concept: string } | null;
+  /** While generating: what it's doing now ("Fixing the logo (round 1 of 3)"). */
+  stage: string | null;
 };
 
 /** The campaign's ads, newest first. */
@@ -462,7 +470,7 @@ export async function listAds(id: string): Promise<SavedAd[]> {
   const { data, error } = await supabase()
     .from("campaign_ads")
     .select(
-      "id, number, parent_id, instruction, retained, changes, headline, cta, product_ids, status, image_path, width, height, error, created_at, tool_call_id, verification, ad_comments!ad_comments_ad_id_fkey(id, x, y, body, status, applied_ad_id, created_at), applied:ad_comments!ad_comments_applied_ad_id_fkey(id, x, y, body, status, applied_ad_id, created_at)",
+      "id, number, parent_id, instruction, retained, changes, headline, cta, product_ids, status, image_path, width, height, error, created_at, tool_call_id, verification, idea, stage, ad_comments!ad_comments_ad_id_fkey(id, x, y, body, status, applied_ad_id, created_at), applied:ad_comments!ad_comments_applied_ad_id_fkey(id, x, y, body, status, applied_ad_id, created_at)",
     )
     .eq("campaign_id", id)
     .order("created_at", { ascending: false });
@@ -486,10 +494,17 @@ export async function listAds(id: string): Promise<SavedAd[]> {
     error: row.error,
     createdAt: row.created_at,
     toolCallId: row.tool_call_id ?? null,
+    stage: row.status === "generating" ? (row.stage ?? null) : null,
     issues: ((row.verification as { remaining?: { problem?: string }[] } | null)?.remaining ?? []).flatMap((i) =>
       i.problem ? [i.problem] : [],
     ),
     fixRounds: (row.verification as { rounds?: number } | null)?.rounds ?? 0,
+    idea: (row.idea as { title?: string } | null)?.title
+      ? {
+          title: (row.idea as { title: string }).title,
+          concept: (row.idea as { pitch?: string; concept?: string }).pitch ?? (row.idea as { concept?: string }).concept ?? "",
+        }
+      : null,
   }));
 }
 

@@ -24,9 +24,10 @@ Work through this checklist. Call tools in the same step where the list says "to
    - Goods on Shopify: `loadCatalog` with `from: "shopify"`.
    - Otherwise (or for services): `findOfferingPages`, then `loadCatalog` with `from: "pages"`. If that finds very few items, look at `listSiteLinks` and call `loadCatalog` again with the `urls` that list or describe what they sell, `mode: "add"`.
 4. **Together:** `writeBrandInsights` and `groupCatalog`.
-5. **Photos:** `findPhotos` for heroes without one (it skips pages that describe several items).
-6. **Check:** `researchStatus`. Fix anything marked missing, then stop researching.
-7. **Hand off:** write one or two sentences on what you learned (what they sell, who it's for), then call `proposeHeadlines` in the same step.
+5. **Brand graphics:** `findBrandVisuals`, after grouping (it reads the hero pages for their share images). It can run alongside `findPhotos`.
+6. **Photos:** `findPhotos` for heroes without one (it skips pages that describe several items).
+7. **Check:** `researchStatus`. Fix anything marked missing, then stop researching.
+8. **Hand off:** write one or two sentences on what you learned (what they sell, who it's for), then ask which products to advertise and call `chooseProducts` in the same step.
 
 When a step degrades (no Firecrawl, a blocked site, a model error), keep going with what you have and mention the gap in your summary; never stop the whole run for one failed step.
 

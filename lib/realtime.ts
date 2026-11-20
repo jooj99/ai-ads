@@ -18,6 +18,10 @@ export const EVENTS = {
   finished: "finished",
   /** CAMPAIGNS_TOPIC: a campaign's status, name, logo, current step or ads in progress changed. */
   changed: "changed",
+  /** campaignTopic: an ad started, finished, failed or went away (re-read the ads). */
+  ads: "ads",
+  /** campaignTopic: what an ad being made is doing now, `{ id, stage }`. */
+  adStage: "ad_stage",
 } as const;
 
 /** Ads in progress for a campaign: new ones being made, and edits being made. */

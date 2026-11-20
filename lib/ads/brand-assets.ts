@@ -5,7 +5,8 @@ import { createHash } from "node:crypto";
 import sharp from "sharp";
 
 import { AD_BUCKET } from "@/lib/ads/store";
-import type { BrandColor } from "@/lib/research/types";
+import { loads } from "@/lib/ads/render";
+import type { BrandColor, BrandKit, BrandVisual } from "@/lib/research/types";
 import { isPublicHttpUrl } from "@/lib/research/url";
 import { supabase } from "@/lib/supabase/server";
 
@@ -32,11 +33,11 @@ export type Swatch = BrandImage & { hex: string; role: string; use: string };
 
 /** The kit's logo as a PNG fal can fetch, or null if there's none or it can't be read. Never throws. */
 export async function logoImage(campaignId: string, logo?: string): Promise<BrandImage | null> {
-  if (!logo || !isPublicHttpUrl(logo)) return null;
+  if (!logo) return null;
   try {
-    const res = await fetch(logo, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(8_000) });
-    if (!res.ok) return null;
-    const source = rasterSource(Buffer.from(await res.arrayBuffer()));
+    const bytes = await logoBytes(logo);
+    if (!bytes) return null;
+    const source = rasterSource(bytes);
     if (!source) return null;
     // SVGs render at high density so small viewBoxes come out crisp.
     const sized = await sharp(source, { density: 300 })
@@ -55,6 +56,21 @@ export async function logoImage(campaignId: string, logo?: string): Promise<Bran
     console.error("[ads] preparing the logo failed", error);
     return null;
   }
+}
+
+/**
+ * The logo file's bytes: fetched from the site, or decoded when the site
+ * inlines it as a data: URL (many inline their SVG logo, e.g. Anthropic).
+ */
+async function logoBytes(logo: string): Promise<Buffer | null> {
+  const inline = logo.match(/^data:image\/[\w+.-]+(;charset=[\w-]+)?(;base64)?,([\s\S]*)$/);
+  if (inline) {
+    const [, , base64, data] = inline;
+    return base64 ? Buffer.from(data, "base64") : Buffer.from(decodeURIComponent(data), "utf8");
+  }
+  if (!isPublicHttpUrl(logo)) return null;
+  const res = await fetch(logo, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(8_000) });
+  return res.ok ? Buffer.from(await res.arrayBuffer()) : null;
 }
 
 /** A solid square per brand color (up to `max`), with what each is for. Never throws. */
@@ -165,4 +181,19 @@ export function rasterSource(bytes: Buffer): Buffer | null {
 function isSvg(bytes: Buffer) {
   const head = bytes.subarray(0, 512).toString("utf8").trimStart().toLowerCase();
   return head.startsWith("<svg") || (head.startsWith("<?xml") && head.includes("<svg"));
+}
+
+/**
+ * The brand's own graphics for a minimal ad whose visual is a brand graphic:
+ * the kit's `visuals`, found and classified by research
+ * (lib/research/visuals.ts, a vision model decides what each image is),
+ * best first. Only ones that still load, at most `max`. Never throws.
+ */
+export async function brandGraphics(kit: BrandKit, max = 4): Promise<BrandVisual[]> {
+  const found: BrandVisual[] = [];
+  for (const visual of kit.visuals ?? []) {
+    if (found.length >= max) break;
+    if (await loads(visual.url).catch(() => false)) found.push(visual);
+  }
+  return found;
 }

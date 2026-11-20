@@ -50,6 +50,7 @@ import {
   kickoffText,
   pendingChoice,
   sameCopy,
+  type AdIdea,
   type AgentUIMessage,
   type CampaignCopy,
 } from "@/lib/agent/tools";
@@ -65,14 +66,27 @@ type KitEdits = Partial<Pick<BrandKit, "colors" | "fonts" | "audience">>;
 const POLL_MS = 3_000;
 
 /**
- * Re-reads the campaign when a research run finishes. The run's own progress
- * reaches the page through its stream (the chat); this covers runs the page
- * isn't following (started in another tab) via the `finished` broadcast, or
- * polling when Realtime isn't configured.
+ * The campaign's Realtime channel:
+ *
+ * - `finished`: a research run finished, so the page re-reads the campaign.
+ *   The run's own progress reaches the page through its stream (the chat);
+ *   this covers runs the page isn't following (started in another tab), or
+ *   polling when Realtime isn't configured.
+ * - `ads`: an ad started, finished, failed or went away (`onAds` re-reads
+ *   them), so a finished ad shows at once.
+ * - `ad_stage`: what an ad being made is doing now (`onAdStage`).
+ *
+ * Returns whether Realtime is on.
  */
-function useResearchFinished(campaignId: string, running: boolean) {
+function useCampaignChannel(
+  campaignId: string,
+  running: boolean,
+  { onAds, onAdStage }: { onAds: () => void; onAdStage: (id: string, stage: string) => void },
+): boolean {
   const router = useRouter();
   const realtime = useRef(browserSupabase());
+  const ads = useEffectEvent(onAds);
+  const stage = useEffectEvent(onAdStage);
 
   useEffect(() => {
     const client = realtime.current;
@@ -80,7 +94,16 @@ function useResearchFinished(campaignId: string, running: boolean) {
     const channel = client
       .channel(campaignTopic(campaignId))
       .on("broadcast", { event: EVENTS.finished }, () => router.refresh())
-      .subscribe();
+      .on("broadcast", { event: EVENTS.ads }, () => ads())
+      .on("broadcast", { event: EVENTS.adStage }, ({ payload }) => {
+        const { id, stage: text } = (payload ?? {}) as { id?: string; stage?: string };
+        if (id && text) stage(id, text);
+      })
+      // Next keeps this page alive (unsubscribed) while you're elsewhere, so
+      // it missed whatever finished meanwhile: re-read on every (re)subscribe.
+      .subscribe((state) => {
+        if (state === "SUBSCRIBED") ads();
+      });
     return () => {
       void client.removeChannel(channel);
     };
@@ -91,6 +114,9 @@ function useResearchFinished(campaignId: string, running: boolean) {
     const timer = setInterval(() => router.refresh(), POLL_MS);
     return () => clearInterval(timer);
   }, [running, router]);
+
+  // eslint-disable-next-line react-hooks/refs -- set once on mount, never changes
+  return Boolean(realtime.current);
 }
 
 /**
@@ -119,7 +145,10 @@ export function CampaignWorkspace({
 
   // ---- Research (a durable agent run, followed in the chat) ----
   const running = campaign.status === "researching" && !stale;
-  useResearchFinished(campaign.id, running);
+  const realtimeOn = useCampaignChannel(campaign.id, running, {
+    onAds: () => void syncAds(),
+    onAdStage: (id, stage) => setAds((list) => list.map((a) => (a.id === id && a.status === "generating" ? { ...a, stage } : a))),
+  });
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string>();
 
@@ -207,10 +236,14 @@ export function CampaignWorkspace({
   // The run a replay follows; null means "the campaign's active run".
   const replayTarget = useRef<string | null>(null);
   const chatApi = `/api/campaigns/${campaign.id}/chat`;
+  // The transport's callbacks read and set these refs when a request runs,
+  // never during render; the compiler can't tell (react-hooks/refs).
   const [transport] = useState(
+    // eslint-disable-next-line react-hooks/refs
     () =>
       new WorkflowChatTransport<AgentUIMessage>({
         api: chatApi,
+        fetch: quietFetch,
         onChatSendMessage: (response, options) => {
           runId.current = response.headers.get("x-workflow-run-id");
           if (runId.current) runBase.current.set(runId.current, [...options.messages]);
@@ -283,7 +316,11 @@ export function CampaignWorkspace({
     const base = runBase.current.get(run);
     if (base) setMessages(base);
     else runBase.current.set(run, [...messages]);
+    // Refs, changed in this effect only: the compiler thinks they're frozen
+    // because the transport captured them (react-hooks/immutability).
+    // eslint-disable-next-line react-hooks/immutability
     runId.current = run;
+    // eslint-disable-next-line react-hooks/immutability
     replayTarget.current = run;
     void resumeStream();
   });
@@ -317,6 +354,7 @@ export function CampaignWorkspace({
     if (run) {
       endedRuns.current.add(run);
       runBase.current.delete(run);
+      // eslint-disable-next-line react-hooks/immutability -- a ref, changed in this handler
       if (runId.current === run) runId.current = null;
     }
     // The stop cancelled any ads that run was making; drop their placeholders.
@@ -339,6 +377,42 @@ export function CampaignWorkspace({
   async function syncAds() {
     const fresh = await listAdsAction(campaign.id);
     if (fresh) setAds(fresh);
+  }
+
+  // While ads are being made, re-read them every 30s (every 5s without
+  // Realtime, which otherwise tells the page when one finishes): the server
+  // marks ads that can't finish any more (their run died, or 10+ minutes) as
+  // failed, so a dead one turns into a failed ad with Try again instead of
+  // loading forever.
+  const generating = ads.some((a) => a.status === "generating");
+  const pollAds = useEffectEvent(() => void syncAds());
+  useEffect(() => {
+    if (!generating) return;
+    if (!realtimeOn) pollAds(); // coming back to the page: catch up at once
+    const timer = setInterval(pollAds, realtimeOn ? 30_000 : 5_000);
+    return () => clearInterval(timer);
+  }, [generating, realtimeOn]);
+
+  /**
+   * Try again on a failed ad. A new ad goes back to the agent, which remakes
+   * it with the same idea, copy and products (`generateAd`'s `retryOf`), in
+   * its place and with its number. A failed edit is removed, then the edit is
+   * asked for again: the comments it was applying are still open on the
+   * version it edited, otherwise its instruction is sent again.
+   */
+  function retryAd(ad: SavedAd) {
+    if (!ad.parentId) {
+      void send(`Try Ad ${ad.number} “${ad.headline}” again (ad ${ad.id}).`);
+      return;
+    }
+    const base = ads.find((a) => a.id === ad.parentId);
+    deleteAd(ad, "version");
+    const open = base?.comments.filter((c) => c.status === "open").length ?? 0;
+    if (base && open) {
+      void send(`Apply my ${open === 1 ? "comment" : `${open} comments`} to Ad ${base.number} “${base.headline}” (ad ${base.id}).`);
+    } else {
+      void send(`Make that edit to Ad ${ad.number} again (ad ${ad.parentId}): ${ad.instruction ?? "the same change as before"}`);
+    }
   }
 
   /**
@@ -513,7 +587,72 @@ export function CampaignWorkspace({
     return true;
   }
 
-  const headlineControls: HeadlineControls = { saved: headlines, onSubmit: submitChoice };
+  // ---- Picking products (the agent's chooseProducts question) ----
+  // The Products tab turns into a picker while the agent waits on one; it
+  // opens by itself once per question, and again from the chat's button.
+  const [picking, setPicking] = useState<{ toolCallId: string; question: string; selected: string[] }>();
+  const pending = pendingChoice(messages);
+  const askedProducts = pending?.type === "tool-chooseProducts" && pending.state === "input-available" ? pending : null;
+  // A new question opens the picker; an answered one (here or in the chat) closes it.
+  const askedId = askedProducts?.toolCallId;
+  const [seenAsk, setSeenAsk] = useState<string | undefined>(undefined);
+  if (askedId !== seenAsk) {
+    setSeenAsk(askedId);
+    setPicking(askedProducts ? { toolCallId: askedProducts.toolCallId, question: askedProducts.input.question, selected: [] } : undefined);
+    if (askedProducts) setTab("products");
+  }
+
+  function pickProducts(toolCallId: string) {
+    if (askedProducts?.toolCallId === toolCallId) {
+      setPicking((p) => p ?? { toolCallId, question: askedProducts.input.question, selected: [] });
+    }
+    setTab("products");
+  }
+
+  function submitProducts() {
+    if (!picking) return;
+    const catalog = kit?.catalog ?? [];
+    const titles = picking.selected.map((id) => catalog.find((p) => p.id === id)?.title ?? id);
+    void addToolOutput({
+      tool: "chooseProducts",
+      toolCallId: picking.toolCallId,
+      output: { productIds: picking.selected, titles },
+    });
+    setPicking(undefined);
+  }
+
+  /**
+   * Generating from an idea card: save each picked idea's headline + CTA
+   * (the headlines list), then tell the agent. If it's waiting on this card
+   * the picks are the tool's output and it resumes; for an older card they
+   * go as a message (interrupting a reply in progress, like any message).
+   */
+  async function generateIdeas(toolCallId: string, live: boolean, picked: AdIdea[]) {
+    setHeadlineError(undefined);
+    const results = await Promise.all(
+      picked.map((i) => saveHeadlineAction(campaign.id, { headline: i.headline, cta: i.cta, source: "agent", proposalId: toolCallId })),
+    );
+    await syncHeadlines();
+    const failed = results.find((r) => !r.ok);
+    if (failed && !failed.ok) {
+      setHeadlineError(failed.error);
+      return false;
+    }
+    if (live) {
+      void addToolOutput({ tool: "proposeIdeas", toolCallId, output: { picked } });
+    } else {
+      await send(`Make these ideas from an earlier set: ${picked.map((i) => `"${i.title}" ("${i.headline}")`).join(", ")}.`);
+    }
+    return true;
+  }
+
+  const headlineControls: HeadlineControls = {
+    saved: headlines,
+    onSubmit: submitChoice,
+    products: kit?.catalog ?? [],
+    onGenerate: generateIdeas,
+    onPickProducts: pickProducts,
+  };
 
   /** Sending while the agent is working (a reply, or research) interrupts it first. */
   async function send(text: string, files?: FileUIPart[]) {
@@ -599,6 +738,7 @@ export function CampaignWorkspace({
         >
           <CampaignChat
             messages={messages}
+            ads={ads}
             status={status}
             error={error}
             inputDisabledReason={inputDisabledReason}
@@ -656,7 +796,26 @@ export function CampaignWorkspace({
               )}
             </TabsContent>
             <TabsContent value="products">
-              {kit && hasKit ? <ProductPicks kit={kit} pending={running} /> : <PanelPlaceholder running={running} />}
+              {kit && hasKit ? (
+                <ProductPicks
+                  kit={kit}
+                  pending={running}
+                  select={
+                    picking && {
+                      question: picking.question,
+                      selected: picking.selected,
+                      onToggle: (id) =>
+                        setPicking((p) =>
+                          p && { ...p, selected: p.selected.includes(id) ? p.selected.filter((x) => x !== id) : [...p.selected, id] },
+                        ),
+                      onSubmit: submitProducts,
+                      onCancel: () => setPicking(undefined),
+                    }
+                  }
+                />
+              ) : (
+                <PanelPlaceholder running={running} />
+              )}
             </TabsContent>
             <TabsContent value="ads">
               <AdsPanel
@@ -676,6 +835,7 @@ export function CampaignWorkspace({
                     `Apply my ${count === 1 ? "comment" : `${count} comments`} to Ad ${ad.number} “${ad.headline}” (ad ${ad.id}).`,
                   )
                 }
+                onRetry={retryAd}
               />
             </TabsContent>
           </div>
@@ -705,6 +865,35 @@ function PanelPlaceholder({ running }: { running: boolean }) {
   );
 }
 
+/**
+ * fetch for the chat transport. Leaving the page (or interrupting) aborts the
+ * stream on purpose, while the run carries on on the server; a plain fetch
+ * then errors mid-read and the transport logs "BodyStreamBuffer was
+ * aborted". Here an aborted read just ends the stream instead.
+ */
+async function quietFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const response = await fetch(input, init);
+  const signal = init?.signal;
+  if (!response.body || !signal) return response;
+  const reader = response.body.getReader();
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) controller.close();
+        else controller.enqueue(value);
+      } catch (error) {
+        if (signal.aborted) controller.close();
+        else controller.error(error);
+      }
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+  return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+}
+
 /** The Ads tab: the ad studio (ads, versions, pinned comments). */
 function AdsPanel({
   ads,
@@ -719,6 +908,7 @@ function AdsPanel({
   onEditComment,
   onApply,
   onReview,
+  onRetry,
 }: {
   ads: SavedAd[];
   pendingAds: PendingAd[];
@@ -732,6 +922,7 @@ function AdsPanel({
   onEditComment: (ad: SavedAd, comment: AdComment, body: string) => Promise<boolean>;
   onApply: (ad: SavedAd, count: number) => void;
   onReview: (comment: AdComment, resolved: boolean) => Promise<void>;
+  onRetry: (ad: SavedAd) => void;
 }) {
   return (
     <div className="flex flex-col gap-3">
@@ -748,6 +939,7 @@ function AdsPanel({
         onEditComment={onEditComment}
         onApply={onApply}
         onReview={onReview}
+        onRetry={onRetry}
       />
     </div>
   );

@@ -4,13 +4,14 @@ import { createHook, getWorkflowMetadata, getWritable } from "workflow";
 
 import { runAdFlow } from "@/lib/ads/flow";
 import type { GenerateAdInput } from "@/lib/ads/generate";
-import { agentToolSpecs, researchToolSpecs, type AgentUIMessage } from "@/lib/agent/tools";
+import { PAUSE_TOOLS, agentToolSpecs, researchToolSpecs, type AgentUIMessage } from "@/lib/agent/tools";
 import {
   adCheck,
   adFinish,
   adRepair,
   adStart,
   beginResearchRun,
+  ensureBrandVisuals,
   executeServerTool,
   finishResearchRun,
   loadAgentSetup,
@@ -29,8 +30,9 @@ import {
  *   ends by proposing headlines.
  * - `agentTurn`: one chat turn (a message, or a submitted choice card).
  *
- * A run ends when the model stops or calls `proposeHeadlines`, which has no
- * server code: the choice card in the browser answers it, and that answer
+ * A run ends when the model stops or calls a pause tool (`chooseProducts`,
+ * `proposeIdeas`), which has no server code: the page answers it (products
+ * picked in the Products tab, ideas ticked on the card), and that answer
  * starts the next turn. The user can interrupt a run: the cancel route
  * resumes the run's cancel hook, which aborts the agent; whatever it said so
  * far is still saved.
@@ -49,6 +51,7 @@ export async function researchRun(campaignId: string) {
   try {
     return await runAgent(campaignId, workflowRunId, thread, "research");
   } finally {
+    await ensureBrandVisuals(campaignId);
     await finishResearchRun(campaignId, workflowRunId);
   }
 }
@@ -76,8 +79,9 @@ async function runAgent(
   // new ad runs as several (draft, check, up to three repairs, finish).
   const tools: Record<string, Tool> = {};
   for (const [name, spec] of Object.entries(agentToolSpecs)) {
+    if (name === "proposeHeadlines") continue; // the old headline card: old threads only
     tools[name] =
-      name === "proposeHeadlines"
+      PAUSE_TOOLS.has(name)
         ? spec
         : name === "generateAd"
           ? {
@@ -128,14 +132,19 @@ async function runAgent(
 }
 
 /**
- * The headlines the user just submitted from the card the agent was waiting
- * on; the instructions list them apart so the model doesn't read them as
- * duplicates it offered.
+ * The headlines the user just saved from the card the agent was waiting on
+ * (a picked idea's headline + CTA, or an old headline card's picks); the
+ * instructions list them apart so the model doesn't read them as duplicates
+ * it offered.
  */
 function justSubmitted(messages: AgentUIMessage[]) {
   const last = messages.at(-1);
   if (last?.role !== "assistant") return [];
   return last.parts.flatMap((part) =>
-    part.type === "tool-proposeHeadlines" && part.state === "output-available" ? part.output.picked : [],
+    part.type === "tool-proposeIdeas" && part.state === "output-available"
+      ? part.output.picked.map(({ headline, cta }) => ({ headline, cta }))
+      : part.type === "tool-proposeHeadlines" && part.state === "output-available"
+        ? part.output.picked
+        : [],
   );
 }

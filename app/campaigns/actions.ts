@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
+import { expireStaleAds } from "@/lib/ads/expire";
 import { requireUser } from "@/lib/supabase/auth";
 
 import {
@@ -149,11 +150,16 @@ export async function listHeadlinesAction(campaignId: string): Promise<SavedHead
   }
 }
 
-/** Re-reads the campaign's ads (after the agent made some in chat). */
+/**
+ * Re-reads the campaign's ads (after the agent made some in chat, and every
+ * 30s while some are generating). Ads that can't finish any more become
+ * failed first (`expireStaleAds`).
+ */
 export async function listAdsAction(campaignId: string): Promise<SavedAd[] | null> {
   await requireUser();
   if (!id.safeParse(campaignId).success) return null;
   try {
+    await expireStaleAds(campaignId);
     return await listAds(campaignId);
   } catch (error) {
     console.error("[campaigns] listing ads failed", error);

@@ -5,6 +5,7 @@ import { Suspense } from "react";
 
 import { CampaignWorkspace } from "@/components/campaigns/campaign-workspace";
 import { Skeleton } from "@/components/ui/skeleton";
+import { expireStaleAds } from "@/lib/ads/expire";
 import { getCampaignResearch, getChat, listAds, listHeadlines } from "@/lib/campaigns";
 import { requireUser } from "@/lib/supabase/auth";
 
@@ -32,7 +33,8 @@ async function Campaign({ params }: { params: PageProps<"/campaigns/[id]">["para
       getCampaignResearch(id),
       getChat(id),
       listHeadlines(id),
-      listAds(id),
+      // Ads that can't finish any more (their run died, or 10+ minutes) show as failed.
+      expireStaleAds(id).then(() => listAds(id)),
     ]);
   } catch (error) {
     console.error("[campaigns] load failed", error);

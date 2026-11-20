@@ -10,6 +10,8 @@ import { CAMPAIGNS_TOPIC, campaignTopic, EVENTS, type CampaignChange } from "@/l
 import { supabase } from "@/lib/supabase/server";
 import { signUploads, uploadName } from "@/lib/uploads";
 import { logoImage } from "@/lib/ads/brand-assets";
+import { ResearchSession } from "@/lib/research/state";
+import { findBrandVisuals } from "@/lib/research/steps";
 import type { AdVerification } from "@/lib/ads/flow";
 import { checkDraft, finishAd, repairDraft, startAd, type AdJob, type GenerateAdInput } from "@/lib/ads/generate";
 import type { AdIssue } from "@/lib/ads/verify";
@@ -59,8 +61,10 @@ const STEP_LABELS: Record<string, string> = {
   groupCatalog: "Grouping the catalog",
   setProductTypes: "Grouping the catalog",
   findPhotos: "Finding photos",
+  findBrandVisuals: "Finding brand graphics",
   researchStatus: "Checking research",
-  proposeHeadlines: "Writing headlines",
+  chooseProducts: "Choosing products",
+  proposeIdeas: "Writing ad ideas",
 };
 
 /** The model and instructions for a run (instructions need the database, so they're built in a step). */
@@ -214,6 +218,25 @@ export async function saveRunThread(
 }
 
 /** Closes a research run: the campaign's status, and the news for the grid and the open page. */
+/**
+ * Every research run ends with the brand's own graphics looked for: if the
+ * agent didn't call findBrandVisuals and the kit has none, this does. Ideas
+ * with a brand graphic depend on them, so it isn't left to the agent's
+ * judgment. Never throws.
+ */
+export async function ensureBrandVisuals(campaignId: string): Promise<void> {
+  "use step";
+  try {
+    const session = await ResearchSession.open(campaignId, { by: "research", force: false });
+    if (session.kit.visuals?.length) return;
+    const result = await findBrandVisuals({ session, fc: null });
+    console.log(`[agent] brand visuals: ${result.summary}`);
+  } catch (error) {
+    // A missing homepage read, a blocked site: research carries on without them.
+    console.error("[agent] finding brand visuals failed", error);
+  }
+}
+
 export async function finishResearchRun(campaignId: string, runId: string): Promise<void> {
   "use step";
   const research = await getCampaignResearch(campaignId);

@@ -17,7 +17,7 @@ import path from "node:path";
 export type Skill = { name: string; description: string; body: string };
 
 const SKILLS_DIR = path.join(process.cwd(), "lib/agent/skills");
-const SKILL_NAMES = ["research"] as const;
+const SKILL_NAMES = ["research", "ad-ideas"] as const;
 export type SkillName = (typeof SKILL_NAMES)[number];
 
 const cache = new Map<string, Skill>();

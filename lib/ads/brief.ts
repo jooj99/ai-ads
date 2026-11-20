@@ -1,4 +1,6 @@
 import type { BrandKit, CatalogItem } from "@/lib/research/types";
+import type { IdeaDirection } from "@/lib/agent/tools";
+import { withoutEmoji } from "@/lib/copy";
 
 /**
  * Turns the brand kit, one headline and the chosen hero products into the
@@ -8,9 +10,10 @@ import type { BrandKit, CatalogItem } from "@/lib/research/types";
  *   image). The model edits from these, so the ad shows the actual product.
  * - `systemPrompt`: the standing rules for every ad (real products only,
  *   exact copy, 9:16 safe zones).
- * - `prompt`: this ad's brief as JSON (headline, CTA, products by image
- *   number, colors, fonts, voice), so each brand fact is a labeled field
- *   rather than prose the model might blur.
+ * - `prompt`: this ad's brief as JSON (the idea's creative direction when
+ *   the ad comes from one, headline, CTA, products by image number, colors,
+ *   fonts, voice), so each brand fact is a labeled field rather than prose
+ *   the model might blur.
  *
  * Everything here is scraped or edited brand data; nothing is invented.
  */
@@ -26,6 +29,10 @@ export type AdBriefInput = {
   swatches?: { url: string; hex: string; role: string; use: string }[];
   /** Images the user attached in chat, as fetchable URLs, with how to use each. */
   references?: { url: string; use: string }[];
+  /** The picked idea this ad makes: its concept, scene and what it shows off. */
+  idea?: IdeaDirection;
+  /** The brand's own graphics (lib/ads/brand-assets.ts), for a brand-graphic visual. */
+  brandGraphics?: { url: string; description: string }[];
 };
 
 export type AdBrief = {
@@ -42,15 +49,54 @@ const MAX_IMAGES = 14;
 export const AD_SYSTEM_PROMPT = `You are a senior performance-marketing art director. You make finished, ready-to-run full-screen 9:16 portrait image ads for mobile social feeds and stories.
 
 Rules for every ad:
-- The attached product photos show the brand's real products. Feature those exact products: keep their shape, colors, materials, prints and any logos on them, and every part where it is and as it attaches (a loop, strap, grip, handle or button stays in the same place and form). Show them held or used the way the photos show them working. Never invent a product, change its design, or add products that aren't in the photos. You may restage them (new background, lighting, angle, hands holding them, props) as long as the product itself is unchanged.
+{{PRODUCT_RULES}}
 - Never invent anything the brand sells or shows: no made-up products, packaging, devices, app screens, dashboards, charts, maps or data. Every product, screen or interface in the ad must come from the attached photos, shown as it is. For a service or software brand, a screen may only be one of the attached screenshots, unchanged; if none is attached, show people, places or the outcome of the service instead of an interface.
-- Render the headline and the call-to-action exactly as given, spelled exactly, each once. The headline is the most prominent text. The call-to-action is a clear button. Add no other words, prices, discounts, claims or slogans, except the brand name or logo.
-- The attached brand logo is the real logo: reproduce it exactly as in its image (same shape, letterforms, colors and proportions), small and legible. Never invent, restyle or simplify it, and don't add a separate wordmark it doesn't have. Its image may sit on a plain white or black background added for visibility: that background isn't part of the logo, so don't draw a box or panel behind it.
+- Render the headline and the call-to-action exactly as given, spelled exactly, each once. The headline is the most prominent text. The call-to-action is a clear button. Add no other words, prices, discounts, claims or slogans, and no emojis or icon symbols anywhere in the image, except the brand name or logo.
+{{LOGO_RULE}}
 - Brand color swatches are solid squares of the exact brand colors. Use those exact colors, each where the brief assigns it (match the swatch, not a similar shade). The swatches are references only: never draw them.
 - Images marked as references from the user are guides they supplied: use each exactly as its note says (add that object, match that style, use that background). They don't replace the product photos unless the note says so.
 - Set type in the style of the brand fonts listed (match their weight, width and feel).
 - Keep all text inside the safe zone: nothing in the top 14% or bottom 20% of the frame, and at least 6% from the sides.
-- Match the brand's voice in the art direction. One clear focal point, high contrast, legible on a phone at a glance.`;
+- Match the brand's voice in the art direction. One clear focal point, high contrast, legible on a phone at a glance.{{STYLE_RULES}}`;
+
+/** How the product appears: shown exactly (with free staging), or not at all (its images are only a style reference). */
+const PRODUCT_RULES = {
+  shown: `- The attached product photos show the brand's real products. Feature those exact products: keep their shape, colors, materials, prints and any logos on them, and every part where it is and as it attaches (a loop, strap, grip, handle or button stays in the same place and form). Never invent a product, change its design, or add products that aren't in the photos.
+- Staging is free: any setting, person, pose, angle, props, light and mood the concept calls for. The product may be held, worn, dangled, placed or used in new ways, as long as it uses only the parts it really has, as they are. Be bold and specific: a real moment, not a catalog shot, unless the concept asks for one.`,
+  brand_graphic: `- This ad doesn't show the product. Its one visual element comes from the attached brand graphics (the brand's own art from its website): lift the 3D shapes, objects or illustrations out of them and place one to three of them large, clean and well lit on the background, as they look in those images (you may scale, rotate, crop and arrange them). Never copy the text, screenshots, layout or backgrounds of those images, and never turn a graphic into a logo, product, device or interface.`,
+  none: `- This ad doesn't show the product or any picture: it's typographic. The headline, the logo, the button and the brand colors carry it, with at most a simple shape or color block.`,
+};
+
+/** The logo rule: reproduce the real one, or (when there's no usable logo file) a plain wordmark. */
+const LOGO_RULES = {
+  real: `- The attached brand logo is the real logo: reproduce it exactly as in its image (same shape, letterforms, colors and proportions), small and legible. Never invent, restyle or simplify it, and don't add a separate wordmark it doesn't have. Its image may sit on a plain white or black background added for visibility: that background isn't part of the logo, so don't draw a box or panel behind it.`,
+  wordmark: `- No logo image is attached: set the brand name as a small, plain wordmark in the brand font. Never invent a logo mark, and never make one out of any other image.`,
+};
+
+export type AdVisual = "product" | "brand_graphic" | "none";
+
+/** A minimal ad: a clean graphic layout instead of a photographed scene. */
+const MINIMAL_RULES = `
+
+This ad is minimal: a clean, confident graphic layout, not a photographed scene.
+- Background: a plain or softly graded color from the brand palette (light or dark), lots of empty space.
+- Logo small at the top. The headline very large and bold in the brand font, left-aligned or centered, the clear hero of the ad. The call-to-action as a clean button (a pill or a full-width bar near the bottom).
+- At most one visual element, as the art direction says: the product cleanly cut out on the background, or one abstract graphic in the brand's visual style (3D shapes, a pattern, a simple illustration). No people, rooms, props or clutter unless the direction asks for them.
+- Calm, premium and modern: think a top software brand's launch ad.`;
+
+/** The standing rules for this ad's style, and whether the product is shown. */
+export function adSystemPrompt(style: "scene" | "minimal" = "scene", visual: AdVisual = "product", hasLogo = true) {
+  return AD_SYSTEM_PROMPT.replace("{{PRODUCT_RULES}}", visual === "product" ? PRODUCT_RULES.shown : PRODUCT_RULES[visual])
+    .replace("{{LOGO_RULE}}", hasLogo ? LOGO_RULES.real : LOGO_RULES.wordmark)
+    .replace("{{STYLE_RULES}}", style === "minimal" ? MINIMAL_RULES : "");
+}
+
+/** An idea's visual: its own field, or (older ideas) product shown or not. */
+export function ideaVisual(idea?: IdeaDirection): AdVisual {
+  return idea?.visual ?? (idea?.showProduct === false ? "brand_graphic" : "product");
+}
+
+export { withoutEmoji };
 
 export function buildAdBrief({
   kit,
@@ -60,9 +106,21 @@ export function buildAdBrief({
   logoUrl,
   swatches = [],
   references = [],
+  idea,
+  brandGraphics = [],
 }: AdBriefInput): AdBrief {
+  const style = idea?.style ?? "scene";
+  // A brand-graphic ad with no brand graphics found falls back to type only.
+  const wanted = ideaVisual(idea);
+  const visual: AdVisual = wanted === "brand_graphic" && !brandGraphics.length ? "none" : wanted;
+  const showProduct = visual === "product";
+  // Ads never show emojis, even if the saved copy has some.
+  headline = withoutEmoji(headline);
+  cta = withoutEmoji(cta);
   const imageUrls: string[] = [];
-  const productEntries = products.map((product) => {
+  // Product photos only when the product is shown (on a software brand's pages
+  // they're often customer logos and headshots, not anything to put in an ad).
+  const productEntries = (showProduct ? products : []).map((product) => {
     const photos: number[] = [];
     for (const url of product.images.slice(0, PHOTOS_PER_PRODUCT)) {
       if (imageUrls.length >= MAX_PRODUCT_PHOTOS || imageUrls.includes(url)) continue;
@@ -80,6 +138,13 @@ export function buildAdBrief({
   // Then the logo, the user's references and the color swatches, while
   // there's room (the swatch colors are also named by hex in the brief).
   const add = (url: string) => (imageUrls.length < MAX_IMAGES ? `image ${imageUrls.push(url)}` : undefined);
+  const graphicImages =
+    visual === "brand_graphic"
+      ? brandGraphics.flatMap((g) => {
+          const image = add(g.url);
+          return image ? [{ image, description: g.description }] : [];
+        })
+      : [];
   const logoImage = logoUrl ? add(logoUrl) : undefined;
   const referenceEntries = references.flatMap((r) => {
     const image = add(r.url);
@@ -90,6 +155,21 @@ export function buildAdBrief({
   const brand = kit.name ?? kit.domain;
   const brief = {
     format: "Full-screen 9:16 portrait image ad for mobile social feeds and stories, full-bleed, no borders or device frames.",
+    ...(idea && {
+      creative_direction: {
+        style,
+        visual,
+        idea: idea.pitch ?? idea.concept,
+        art_direction: idea.direction ?? idea.scene,
+        ...(idea.showsOff && { shows_off: idea.showsOff }),
+        note:
+          visual === "product"
+            ? "Make this concept as directed. The products stay exactly as in their photos."
+            : visual === "brand_graphic"
+              ? "Make this concept as directed. The product doesn't appear: the visual is lifted from the attached brand graphics."
+              : "Make this concept as directed: typographic, no product and no picture.",
+      },
+    }),
     brand: {
       name: brand,
       ...(kit.tagline && { tagline: kit.tagline }),
@@ -102,7 +182,10 @@ export function buildAdBrief({
       services_note:
         "This brand sells a service, not physical goods. The attached photos are real screenshots or photos of the service: show them unchanged. Do not draw any other screen, dashboard, app interface, chart or data, and do not invent a physical product.",
     }),
-    hero_products: productEntries,
+    ...(showProduct
+      ? { hero_products: productEntries }
+      : { about: products.map((p) => p.title).join(", ") }),
+    ...(graphicImages.length && { brand_graphics: graphicImages.map((g) => `${g.image}: ${g.description}`) }),
     // Each color assigned to a job, with its swatch image when one was sent.
     colors: kit.colors.map((c) => {
       const swatch = swatches.find((s) => s.hex === c.hex.toUpperCase());
@@ -125,6 +208,10 @@ export function buildAdBrief({
 
   const imageList = [
     ...productEntries.flatMap((p) => p.photos.map((img) => `${img}: product photo of ${p.name}`)),
+    ...graphicImages.map(
+      (g) =>
+        `${g.image}: a brand graphic from the ${brand} website, ${g.description} (lift its shapes or objects for the ad's visual; ignore any text or layout in it)`,
+    ),
     ...(logoImage ? [`${logoImage}: the ${brand} logo (the real one; reproduce it exactly)`] : []),
     ...referenceEntries.map((r) => `${r.image}: a reference from the user (${r.use})`),
     ...swatches.flatMap((s) => {
@@ -133,7 +220,7 @@ export function buildAdBrief({
     }),
   ];
 
-  const prompt = `Create the ad described by this brief. Attached images, in order:
+  const prompt = `${idea ? `Make the ad concept "${idea.title}" described by this brief.` : "Create the ad described by this brief."} Attached images, in order:
 ${imageList.map((line) => `- ${line}`).join("\n")}
 
 Brief (JSON):
@@ -141,7 +228,7 @@ ${JSON.stringify(brief, null, 2)}
 
 Only the headline and the call-to-action appear as text (plus the brand name or logo). Prices and sample lines are context, not copy.`;
 
-  return { systemPrompt: AD_SYSTEM_PROMPT, prompt, imageUrls };
+  return { systemPrompt: adSystemPrompt(style, visual, Boolean(logoImage)), prompt, imageUrls };
 }
 
 function clip(text: string, max: number) {

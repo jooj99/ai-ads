@@ -37,6 +37,7 @@ export type KitField =
   | "name"
   | "tagline"
   | "logo"
+  | "visuals"
   | "colors"
   | "fonts"
   | "offering"
@@ -57,6 +58,7 @@ export type KitPatch = Partial<
     | "platform"
     | "logo"
     | "logoCandidates"
+    | "visuals"
     | "colors"
     | "fonts"
     | "offering"
@@ -74,6 +76,7 @@ const SIMPLE_FIELDS: Partial<Record<keyof KitPatch, KitField>> = {
   tagline: "tagline",
   logo: "logo",
   logoCandidates: "logo",
+  visuals: "visuals",
   colors: "colors",
   fonts: "fonts",
   offering: "offering",
@@ -107,6 +110,7 @@ const KIT_COLUMNS: Record<string, string[]> = {
   offeringReason: ["offering_reason"],
   logo: ["logo_url"],
   logoCandidates: ["logo_candidates"],
+  visuals: ["visuals"],
   colors: ["colors"],
   fonts: ["fonts"],
   valueProposition: ["value_proposition"],
@@ -170,6 +174,7 @@ export class ResearchSession {
       tagline: k?.tagline ?? undefined,
       logo: k?.logo_url ?? undefined,
       logoCandidates: k?.logo_candidates ?? [],
+      visuals: k?.visuals ?? [],
       colors: k?.colors ?? [],
       fonts: k?.fonts ?? [],
       valueProposition: k?.value_proposition ?? undefined,

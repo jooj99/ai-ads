@@ -2,7 +2,7 @@ import { createModelCallToUIChunkTransform } from "@ai-sdk/workflow";
 import { createUIMessageStreamResponse, TypeValidationError, validateUIMessages } from "ai";
 import { start } from "workflow/api";
 
-import { agentToolSpecs, type AgentUIMessage } from "@/lib/agent/tools";
+import { PAUSE_TOOLS, agentToolSpecs, type AgentUIMessage } from "@/lib/agent/tools";
 import { getCampaign, getChat, saveChat } from "@/lib/campaigns";
 import { supabase } from "@/lib/supabase/server";
 import { uploadName } from "@/lib/uploads";
@@ -78,7 +78,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/campaigns/[id]/
  * reply can end mid tool call: arguments still streaming, or a server tool
  * that never returned. Those parts can't be validated or sent to the model,
  * so they're dropped (and an assistant message left empty with them).
- * Unanswered headline questions are kept; closeUnansweredChoices handles them.
+ * Unanswered questions (the pause tools) are kept; closeUnansweredChoices handles them.
  * A tool call that appears twice (a run replayed into a chat that already
  * showed it) keeps only its first copy: the model rejects repeated call ids.
  */
@@ -90,7 +90,7 @@ function withoutInterruptedParts(raw: unknown): unknown {
       if (!message || typeof message !== "object" || !Array.isArray(message.parts)) return message;
       const parts = (message.parts as { type?: string; state?: string; toolCallId?: string }[]).filter((part) => {
         if (typeof part.type !== "string" || !part.type.startsWith("tool-")) return true;
-        if (part.state === "input-streaming" || (part.state === "input-available" && part.type !== "tool-proposeHeadlines")) {
+        if (part.state === "input-streaming" || (part.state === "input-available" && !PAUSE_TOOLS.has(part.type.slice(5)))) {
           return false;
         }
         if (!part.toolCallId) return true;
@@ -110,21 +110,25 @@ function withoutInterruptedParts(raw: unknown): unknown {
 
 
 /**
- * A headline question the user moved past (they replied in chat instead of
- * continuing from the card) has no tool result, which the model API rejects.
- * Record it as an empty pick so the model knows they replied in chat; any
- * headlines they saved from that card are in its instructions.
+ * A question the user moved past (they replied in chat instead of picking
+ * products or ideas) has no tool result, which the model API rejects. Record
+ * it as an empty answer so the model knows they replied in chat; headlines
+ * they saved from a card are in its instructions.
  */
 function closeUnansweredChoices(messages: AgentUIMessage[]): AgentUIMessage[] {
   return messages.map((message, i) => {
     if (message.role !== "assistant" || i === messages.length - 1) return message;
     return {
       ...message,
-      parts: message.parts.map((part) =>
-        part.type === "tool-proposeHeadlines" && part.state === "input-available"
-          ? { ...part, state: "output-available" as const, output: { picked: [] } }
-          : part,
-      ),
+      parts: message.parts.map((part) => {
+        if (part.type === "tool-chooseProducts" && part.state === "input-available") {
+          return { ...part, state: "output-available" as const, output: { productIds: [], titles: [] } };
+        }
+        if ((part.type === "tool-proposeIdeas" || part.type === "tool-proposeHeadlines") && part.state === "input-available") {
+          return { ...part, state: "output-available" as const, output: { picked: [] } };
+        }
+        return part;
+      }),
     };
   });
 }

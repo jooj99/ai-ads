@@ -89,6 +89,7 @@ export function researchTools(campaignId: string, runId?: string) {
       ...t.addProductFromLink,
       execute: (input: { url: string }) => run("agent", false, (c) => steps.addProductFromLink(c, input)),
     },
+    findBrandVisuals: { ...t.findBrandVisuals, execute: () => run("research", false, (c) => steps.findBrandVisuals(c)) },
     removeProducts: {
       ...t.removeProducts,
       execute: (input: { ids: string[] }) => run("agent", false, (c) => steps.removeProducts(c, input)),

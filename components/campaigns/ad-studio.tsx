@@ -57,12 +57,10 @@ import type { CatalogItem } from "@/lib/research/types";
 import { cn } from "@/lib/utils";
 
 /** A new ad the agent is making right now (its generateAd call hasn't returned). */
-export type PendingAd = { key: string; headline: string; cta: string };
+export type PendingAd = { key: string; headline: string; cta: string; stage?: string | null };
 
 /** One ad: every version sharing its number, oldest first. */
 type Ad = { number: number; versions: SavedAd[] };
-
-const STUCK_MS = 5 * 60_000;
 
 /**
  * The Ads tab: the campaign's ads as the center of the workspace, sized to
@@ -89,6 +87,7 @@ export function AdStudio({
   onEditComment,
   onApply,
   onReview,
+  onRetry,
 }: {
   ads: SavedAd[];
   pending: PendingAd[];
@@ -112,13 +111,13 @@ export function AdStudio({
   onApply: (ad: SavedAd, count: number) => void;
   /** The answer to "was it resolved?" for a comment an edit applied. */
   onReview: (comment: AdComment, resolved: boolean) => Promise<void>;
+  /** Makes a failed ad, or a failed version, again. */
+  onRetry: (ad: SavedAd) => void;
 }) {
-  // When this page opened; rows started before it and still generating 5+
-  // minutes later died with their step.
-  const [openedAt] = useState(() => Date.now());
-  const live = (ad: SavedAd) =>
-    ad.status === "generating" &&
-    openedAt - new Date(ad.createdAt).getTime() < STUCK_MS;
+  // Being made. The server turns rows that can't finish any more (their run
+  // died, or 10+ minutes) into failed ones (`expireStaleAds`), and the page
+  // re-reads the ads while any are generating.
+  const live = (ad: SavedAd) => ad.status === "generating";
 
   const all = groupByNumber(ads);
   // New ads being made: an ad whose only version is still generating, plus
@@ -130,6 +129,7 @@ export function AdStudio({
         key: `n${a.number}`,
         headline: a.versions[0].headline,
         cta: a.versions[0].cta,
+        stage: a.versions[0].stage,
       })),
     // A call whose ad already exists (being made, or finished while the tool
     // call is still wrapping up) has no placeholder of its own.
@@ -237,6 +237,7 @@ export function AdStudio({
               version.id === newest?.id && version.status === "ready" && !inEdit
             }
             editing={inEdit}
+            editStage={ad.versions.find((v) => live(v) && v.parentId)?.stage}
             nextVersion={versions.length + 1}
             onAddComment={(c) => onAddComment(version, c)}
             versionLabel={(id) => {
@@ -248,6 +249,7 @@ export function AdStudio({
             fading={adLeaving}
             onRemoveComment={(c) => removeComment(version, c)}
             onEditComment={(c, body) => onEditComment(version, c, body)}
+            onRetry={() => onRetry(version)}
           />
           <AdDetails
             number={ad.number}
@@ -379,7 +381,7 @@ function AdRail({
                     {open}
                   </span>
                 )}
-                {top.issues.length > 0 && top.imageUrl && (
+                {(top.issues?.length ?? 0) > 0 && top.imageUrl && (
                   <span
                     title="Still not right after the automatic fixes"
                     className="absolute bottom-1 left-1 flex size-4 items-center justify-center rounded-full bg-brand-orange text-white shadow-sm"
@@ -427,7 +429,11 @@ function AdRail({
         );
       })}
       {making.map((p) => (
-        <li key={p.key} className="shrink-0" title={`Making “${p.headline}”`}>
+        <li
+          key={p.key}
+          className="shrink-0"
+          title={`Making “${p.headline}”${p.stage ? `: ${p.stage}` : ""}`}
+        >
           <div className="flex aspect-[9/16] w-16 items-center justify-center rounded-lg bg-background ring-1 ring-foreground/10 @lg:w-full">
             <Loader2Icon className="size-4 animate-spin text-muted-foreground" />
           </div>
@@ -447,6 +453,7 @@ function AdCanvas({
   number,
   canComment,
   editing,
+  editStage,
   nextVersion,
   versionLabel,
   onReview,
@@ -455,11 +462,14 @@ function AdCanvas({
   fading,
   onRemoveComment,
   onEditComment,
+  onRetry,
 }: {
   ad: SavedAd;
   number: number;
   canComment: boolean;
   editing: boolean;
+  /** What the edit in progress is doing now ("Applying 2 comments"). */
+  editStage?: string | null;
   nextVersion: number;
   /** Comments being deleted: their pins shrink away first. */
   leavingComments: string[];
@@ -469,6 +479,8 @@ function AdCanvas({
   onRemoveComment: (comment: AdComment) => void;
   /** Rewrites an open comment; resolves true once saved. */
   onEditComment: (comment: AdComment, body: string) => Promise<boolean>;
+  /** Makes this failed ad (or version) again. */
+  onRetry: () => void;
   /** "v3" for a version id of this ad. */
   versionLabel: (id: string) => string;
   onReview: (comment: AdComment, resolved: boolean) => Promise<void>;
@@ -592,6 +604,9 @@ function AdCanvas({
                 as="p"
                 className="text-sm font-medium"
               >{`Making v${nextVersion} of Ad ${number}…`}</Shimmer>
+              {editStage && (
+                <p className="px-6 text-center text-xs text-muted-foreground">{editStage}</p>
+              )}
             </div>
           )}
         </div>
@@ -609,9 +624,10 @@ function AdCanvas({
                 ? "This version didn't finish."
                 : "This ad couldn't be made.")}
           </p>
-          <p className="text-sm text-muted-foreground">
-            Ask the agent to try again.
-          </p>
+          <Button size="sm" variant="outline" onClick={onRetry}>
+            <RotateCcwIcon />
+            Try again
+          </Button>
         </div>
       )}
     </div>
@@ -1041,9 +1057,18 @@ function AdDetails({
           )}
         </div>
         <p className="text-lg leading-snug font-semibold">{ad.headline}</p>
+        {ad.idea && (
+          <div className="flex flex-col gap-0.5 text-xs leading-snug text-muted-foreground" title={ad.idea.concept}>
+            <span>
+              <span className="font-medium text-foreground">Idea: </span>
+              {ad.idea.title}
+            </span>
+            {ad.idea.concept && <span className="line-clamp-2">{ad.idea.concept}</span>}
+          </div>
+        )}
       </div>
 
-      {ad.issues.length > 0 && <AdIssues issues={ad.issues} rounds={ad.fixRounds} />}
+      {(ad.issues?.length ?? 0) > 0 && <AdIssues issues={ad.issues} rounds={ad.fixRounds} />}
 
       {versions.length > 1 && (
         <div className="flex flex-col gap-2">
