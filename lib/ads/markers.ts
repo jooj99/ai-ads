@@ -125,3 +125,45 @@ export async function drawMarkers(image: Uint8Array, markers: Marker[]): Promise
     .webp({ quality: 88 })
     .toBuffer();
 }
+
+/**
+ * Where each change goes, as a separate location map instead of marks drawn
+ * on the ad: a black image the same size as the ad, with a white area for
+ * each change (a box's area, or a disc around a pin's spot) and its number
+ * in a small label beside it. Marks drawn on a copy of the ad look like ad
+ * content, and the image model sometimes painted them into the result (a
+ * numbered map pin in a finished ad); a black-and-white map has nothing that
+ * reads as part of the ad. The prompt also gives each position in words.
+ */
+export async function drawLocationMap(image: Uint8Array, markers: Marker[]): Promise<Buffer> {
+  const { width = 1080, height = 1920 } = await sharp(image).metadata();
+  const r = Math.round(width * 0.045);
+  const font = Math.round(r * 0.9);
+  const shapes = markers
+    .map(({ n, x, y, box }) => {
+      const area = box
+        ? {
+            left: Math.round(box.left * width),
+            top: Math.round(box.top * height),
+            w: Math.max(8, Math.round((box.right - box.left) * width)),
+            h: Math.max(8, Math.round((box.bottom - box.top) * height)),
+          }
+        : null;
+      const cx = Math.round(x * width);
+      const cy = Math.round(y * height);
+      const shape = area
+        ? `<rect x="${area.left}" y="${area.top}" width="${area.w}" height="${area.h}" fill="#FFFFFF" />`
+        : `<circle cx="${cx}" cy="${cy}" r="${r * 1.6}" fill="#FFFFFF" />`;
+      if (n === undefined) return shape;
+      // The number sits just outside the area's top-left corner (inside the
+      // map's edges), in grey so it never merges with the white area.
+      const lx = Math.min(width - r, Math.max(r, (area ? area.left : cx - r * 1.6) - r * 0.2));
+      const ly = Math.min(height - r, Math.max(r, (area ? area.top : cy - r * 1.6) - r * 0.2));
+      return `${shape}
+  <circle cx="${lx}" cy="${ly}" r="${r * 0.75}" fill="#888888" />
+  <text x="${lx}" y="${ly}" dy="0.36em" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-weight="700" font-size="${font}" fill="#000000">${n}</text>`;
+    })
+    .join("\n");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="#000000" />${shapes}</svg>`;
+  return sharp(Buffer.from(svg)).webp({ quality: 85 }).toBuffer();
+}

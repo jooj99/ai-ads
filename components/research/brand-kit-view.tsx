@@ -718,8 +718,8 @@ export function ProductPicks({
           </div>
         ) : (
           <Empty>
-            No {noun}s could be loaded from this site. Adding them by link is coming with the next
-            step.
+            No {noun}s could be loaded from this site. Paste a link to a {noun} page in the chat and
+            the agent adds it, or ask it to try reading the site again.
           </Empty>
         )}
       </CardContent>

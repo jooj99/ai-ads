@@ -4,6 +4,7 @@ import { generateText, Output } from "ai";
 import sharp from "sharp";
 import { z } from "zod";
 import { GATEWAY_CACHING } from "@/lib/ai-caching";
+import { withStallRetry } from "@/lib/ai-retry";
 
 /**
  * Describes what an edit actually changed, by looking at the ad before and
@@ -39,9 +40,11 @@ export async function summarizeEdit(input: {
 }): Promise<string[]> {
   try {
     const [before, after] = await Promise.all([small(input.before), small(input.after)]);
-    const { output } = await generateText({
+    const { output } = await withStallRetry("the edit summary", (abortSignal) => generateText({
       model: EDIT_SUMMARY_MODEL,
       providerOptions: GATEWAY_CACHING,
+      abortSignal,
+      maxRetries: 0,
       instructions:
         "You compare two versions of an image ad and list what changed. Describe only differences you can see between them; ignore tiny rendering differences. Don't restate the requests: if one wasn't done, leave it out; if something else changed, include it.",
       messages: [
@@ -60,7 +63,7 @@ export async function summarizeEdit(input: {
         },
       ],
       output: Output.object({ schema }),
-    });
+    }));
     return output.changes.map((c) => c.trim()).filter(Boolean).slice(0, 4);
   } catch (error) {
     console.error("[ads] summarizing the edit failed", error);

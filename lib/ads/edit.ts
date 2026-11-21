@@ -3,7 +3,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 
 import { adResult, type AdToolResult } from "@/lib/ads/generate";
-import { drawMarkers } from "@/lib/ads/markers";
+import { describeRegion, drawLocationMap, type Region } from "@/lib/ads/markers";
 import { WEBP, workWebp } from "@/lib/ads/webp";
 import {
   AdStoppedError,
@@ -14,6 +14,7 @@ import {
   finishedByToolCall,
   startAdRow,
   storeAdImage,
+  runStopped,
   throwIfStopped,
   type FalImage,
 } from "@/lib/ads/render";
@@ -91,13 +92,19 @@ export const EDIT_SYSTEM_PROMPT = `You edit finished full-screen 9:16 portrait i
 
 Rules for every edit:
 - Image 1 is the ad before the edit. Treat it as the base: keep the same framing, layout, camera angle, background, lighting, colors, people and their poses, hands, products and the way they're held, the logo, every piece of text and its typeface, size and position. Everything not named in a requested change must look identical to image 1.
-- Image 2, when attached, is image 1 with numbered pink pins marking exactly where each requested change applies (numbered like the comments; positions are also given in words). Change only what each request asks for, at its pin. The pins are only a guide: return image 1 itself, edited, and never draw pins, circles, numbers, boxes, arrows, labels or other marks.
+- Image 2, when attached, is a location map, not part of the ad: a black image the same size as image 1 with a numbered white area over each place a requested change applies (numbered like the comments; positions are also given in words). A white disc marks a spot; a white rectangle marks a whole area. Lay it over image 1 in your mind to find each place, and change only what each request asks for, there. Nothing from the location map goes into the ad: never draw white or black areas, pins, circles, numbers, boxes, outlines, arrows, labels or other marks. Return image 1 itself, edited.
 - Images listed as references from the user are things to bring into the ad exactly as their note says (an object to add, a style or background to match). Use them only for the requested change.
 - Images listed as the brand logo, brand color swatches, brand visuals or product photos come from the brand kit. Use them only where a requested change calls for them (a brand visual's shapes or illustration, not its text or layout): reproduce the logo exactly as in its image (never invent or restyle it, and leave out the plain background its image may sit on), use swatch colors exactly (match the swatch, not a similar shade), and keep products matching their photos. Never draw the swatches themselves.
 - Never add invented products, devices, app screens, dashboards, charts or data. Anything the brand sells or shows must match image 1 or the attached reference photos.
 - Every requested change must be clearly visible in the result. Returning image 1 unchanged, or skipping a comment, is a failure.
 - Keep the headline and call-to-action wording exactly as in image 1, spelled exactly, unless a change explicitly asks for new wording.
 - Return the full ad at the same 9:16 size, not a crop.`;
+
+/** A box comment's area (center ± half its size), or undefined for a pin. */
+function boxOf(p: { x: number; y: number; w?: number | null; h?: number | null }): Region | undefined {
+  if (!p.w || !p.h) return undefined;
+  return { left: p.x - p.w / 2, top: p.y - p.h / 2, right: p.x + p.w / 2, bottom: p.y + p.h / 2 };
+}
 
 /** What to tell the model on the retry, from what the first attempt got wrong. */
 function retryNote(check: EditCheck, drifted: boolean): string {
@@ -126,27 +133,66 @@ function better<T extends { check: EditCheck }>(a: T, b: T): T {
   return a.check.kept >= b.check.kept ? a : b;
 }
 
+/**
+ * An edit, prepared and recorded but not drawn yet: what its own run needs.
+ * Plain JSON (it's handed to the edit's workflow run). `temp` are the WebP
+ * copies fal reads (the base and the pinned copy), deleted when it ends.
+ */
+export type EditJob = {
+  campaignId: string;
+  adId: string;
+  parent: { id: string; number: number; headline: string; cta: string; image_path: string };
+  /** Open comments, numbered: a spot (pin) or an area (box, `w`/`h`). */
+  pins: { id: string; x: number; y: number; w: number | null; h: number | null; body: string; n: number }[];
+  instruction?: string;
+  prompt: string;
+  imageUrls: string[];
+  temp: string[];
+};
+
+/** Prepares the edit, then makes it (the in-process flow; the agent splits the two across runs). */
 export async function editAd(
   campaignId: string,
   input: EditAdInput,
   ctx: { toolCallId?: string; runId?: string } = {},
 ): Promise<AdToolResult> {
-  // The WebP copies fal reads (the base and the pinned copy) are deleted
-  // however the edit ends.
+  const prepared = await prepareEdit(campaignId, input, ctx);
+  return "result" in prepared ? prepared.result : runEdit(prepared.job);
+}
+
+/**
+ * Everything before the image work, in a few seconds: checks the request
+ * (the ad exists and is finished, there's something to change, attached
+ * images exist), uploads the copies fal reads, writes the prompt and records
+ * the new version as "generating". A mistake comes back as `{ result }` for
+ * the agent. `runId` is the agent run asking: if it was stopped meanwhile,
+ * nothing is recorded.
+ */
+export async function prepareEdit(
+  campaignId: string,
+  input: EditAdInput,
+  ctx: { toolCallId?: string; runId?: string } = {},
+): Promise<{ result: AdToolResult } | { job: EditJob }> {
   const temp: string[] = [];
+  const removeTemp = () =>
+    temp.length ? supabase().storage.from(AD_BUCKET).remove(temp).then(() => undefined, () => undefined) : undefined;
   try {
-    return await runEdit(campaignId, input, ctx, temp);
-  } finally {
-    if (temp.length) await supabase().storage.from(AD_BUCKET).remove(temp).catch(() => undefined);
+    const prepared = await prepare(campaignId, input, ctx, temp);
+    if ("result" in prepared) await removeTemp();
+    return prepared;
+  } catch (error) {
+    await removeTemp();
+    throw error;
   }
 }
 
-async function runEdit(
+async function prepare(
   campaignId: string,
   input: EditAdInput,
   { toolCallId, runId }: { toolCallId?: string; runId?: string },
   temp: string[],
-): Promise<AdToolResult> {
+): Promise<{ result: AdToolResult } | { job: EditJob }> {
+  const fail = (summary: string) => ({ result: { ok: false, summary } });
   const db = supabase();
   const { data: parent } = await db
     .from("campaign_ads")
@@ -154,33 +200,33 @@ async function runEdit(
     .eq("campaign_id", campaignId)
     .eq("id", input.adId)
     .maybeSingle();
-  if (!parent) return { ok: false, summary: "Couldn't edit that ad: it doesn't exist (it may have been deleted)." };
+  if (!parent) return fail("Couldn't edit that ad: it doesn't exist (it may have been deleted).");
   const label = `“${parent.headline}”`;
   if (parent.status !== "ready" || !parent.image_path) {
-    return { ok: false, summary: `Couldn't edit the ad for ${label}: it isn't finished.` };
+    return fail(`Couldn't edit the ad for ${label}: it isn't finished.`);
   }
-  if (!falCredentials()) return { ok: false, summary: `Couldn't edit the ad for ${label}: image generation isn't configured.` };
+  if (!falCredentials()) return fail(`Couldn't edit the ad for ${label}: image generation isn't configured.`);
 
   const done = await finishedByToolCall(toolCallId);
-  if (done) return adResult(campaignId, done.id, done.headline, done.cta, done.image_path, `Edited the ad for ${label}.`);
+  if (done) return { result: adResult(campaignId, done.id, done.headline, done.cta, done.image_path, `Edited the ad for ${label}.`) };
 
   const { data: comments } = await db
     .from("ad_comments")
-    .select("id, x, y, body")
+    .select("id, x, y, w, h, body")
     .eq("ad_id", parent.id)
     .eq("status", "open")
     .order("created_at");
   const pins = (comments ?? []).map((c, i) => ({ ...c, n: i + 1 }));
   const instruction = input.instruction?.trim();
   if (!pins.length && !instruction) {
-    return { ok: false, summary: `Nothing to change on the ad for ${label}: it has no open comments and no instruction.` };
+    return fail(`Nothing to change on the ad for ${label}: it has no open comments and no instruction.`);
   }
 
   // The image before the edit, and (with comments) a pinned copy, as
   // short-lived signed URLs fal can fetch from our private bucket.
   const bucket = db.storage.from(AD_BUCKET);
   const original = await bucket.download(parent.image_path);
-  if (original.error || !original.data) return { ok: false, summary: `Couldn't edit the ad for ${label}: its image is missing.` };
+  if (original.error || !original.data) return fail(`Couldn't edit the ad for ${label}: its image is missing.`);
   const before = new Uint8Array(await original.data.arrayBuffer());
   // fal reads a WebP copy of the base (about 1 MB instead of the 4 MB PNG,
   // and a retry reads it again); the ad's inputs still record the PNG.
@@ -188,29 +234,29 @@ async function runEdit(
   const basePath = `${campaignId}/edit-${token}.webp`;
   temp.push(basePath);
   const base = await bucket.upload(basePath, await workWebp(before), { contentType: WEBP, upsert: true });
-  if (base.error) return { ok: false, summary: `Couldn't edit the ad for ${label}: preparing its image failed.` };
+  if (base.error) return fail(`Couldn't edit the ad for ${label}: preparing its image failed.`);
   const imagePaths = [basePath];
   // With comments: a copy with a numbered pin exactly where each was placed.
   // A pin the model copies into the result is caught and removed afterwards
   // (the leftover-mark check below).
   if (pins.length) {
-    const marked = await drawMarkers(before, pins);
+    const marked = await drawLocationMap(before, pins.map((p) => ({ n: p.n, x: p.x, y: p.y, box: boxOf(p) })));
     const markPath = `${campaignId}/marks-${token}.webp`;
     temp.push(markPath);
     const upload = await bucket.upload(markPath, marked, { contentType: WEBP, upsert: true });
-    if (upload.error) return { ok: false, summary: `Couldn't edit the ad for ${label}: preparing the comments failed.` };
+    if (upload.error) return fail(`Couldn't edit the ad for ${label}: preparing the comments failed.`);
     imagePaths.push(markPath);
   }
   const signed = await bucket.createSignedUrls(imagePaths, SIGNED_URL_SECONDS);
   const adUrls = (signed.data ?? []).map((s) => s.signedUrl).filter((u): u is string => Boolean(u));
   if (signed.error || adUrls.length !== imagePaths.length) {
-    return { ok: false, summary: `Couldn't edit the ad for ${label}: preparing its image failed.` };
+    return fail(`Couldn't edit the ad for ${label}: preparing its image failed.`);
   }
   // After ours: the brand kit items the agent chose, then images the user
   // attached in chat, while there's room.
   const refs = await resolveReferences(campaignId, input.references);
   if (refs.missing.length) {
-    return { ok: false, summary: `Couldn't edit the ad for ${label}: no attached image called ${refs.missing.map((m) => `"${m}"`).join(", ")}.` };
+    return fail(`Couldn't edit the ad for ${label}: no attached image called ${refs.missing.map((m) => `"${m}"`).join(", ")}.`);
   }
   const kitImages = await brandKitImages(campaignId, input.include);
   const imageUrls = [...adUrls];
@@ -255,11 +301,16 @@ async function runEdit(
   };
 
   const changes = {
-    changes: pins.map((p) => ({
-      comment: p.n,
-      where: `pin ${p.n} on image 2, about ${Math.round(p.x * 100)}% from the left and ${Math.round(p.y * 100)}% from the top`,
-      request: p.body,
-    })),
+    changes: pins.map((p) => {
+      const box = boxOf(p);
+      return {
+        comment: p.n,
+        where: box
+          ? `white area ${p.n} on the location map (image 2): the area ${describeRegion(box)}`
+          : `white disc ${p.n} on the location map (image 2): the spot about ${Math.round(p.x * 100)}% from the left and ${Math.round(p.y * 100)}% from the top`,
+        request: p.body,
+      };
+    }),
     ...(instruction && { overall_request: instruction }),
     ...(referenceList.length && { user_references: referenceList }),
     ...(Object.keys(brandKit).length && { brand_kit: brandKit }),
@@ -271,11 +322,11 @@ async function runEdit(
   };
   const prompt = `Edit image 1. Attached images, in order:
 - image 1: the ad before the edit (the base; return this image, edited, and keep everything not requested exactly as it is)
-${pins.length ? "- image 2: the same ad with numbered pins where each change applies (guide only)\n" : ""}${imageLines.map((line) => `- ${line}\n`).join("")}
+${pins.length ? "- image 2: a location map, not part of the ad: black, with a numbered white area over each place a change applies\n" : ""}${imageLines.map((line) => `- ${line}\n`).join("")}
 Requested changes (JSON):
 ${JSON.stringify(changes, null, 2)}
 
-Change only what is requested. Return the whole of image 1, and don't draw the pins.`;
+Change only what is requested. Return the whole of image 1, with nothing from the location map drawn in it.`;
 
   // What this version applied, in words, for the version history.
   const applied = [...pins.map((p) => `${p.n}. ${p.body}`), ...(instruction ? [instruction] : [])].join("\n");
@@ -294,22 +345,63 @@ Change only what is requested. Return the whole of image 1, and don't draw the p
       parent_id: parent.id,
       instruction: applied,
       tool_call_id: toolCallId ?? null,
-      run_id: runId ?? null,
+      run_id: null,
     }));
+    if (runId && (await runStopped(campaignId, runId))) {
+      await db.from("campaign_ads").delete().eq("id", adId);
+      throw new AdStoppedError();
+    }
   } catch (error) {
-    if (error instanceof AdStoppedError) return { ok: false, summary: `Stopped editing the ad for ${label}.` };
+    if (error instanceof AdStoppedError) return fail(`Stopped editing the ad for ${label}.`);
     console.error("[ads] saving the edit row failed", error);
-    return { ok: false, summary: `Couldn't edit the ad for ${label}: saving it failed.` };
+    return fail(`Couldn't edit the ad for ${label}: saving it failed.`);
   }
+  const pinned = pins.length ? `${pins.length} ${pins.length === 1 ? "comment" : "comments"}` : "";
+  await setAdStage(campaignId, adId, `Applying ${[pinned, instruction && "your change"].filter(Boolean).join(" and ")}`);
+
+  return {
+    job: {
+      campaignId,
+      adId,
+      parent: { id: parent.id, number: parent.number, headline: parent.headline, cta: parent.cta, image_path: parent.image_path },
+      pins,
+      instruction,
+      prompt,
+      imageUrls,
+      temp,
+    },
+  };
+}
+
+/**
+ * Makes a prepared edit: the image, its checks and retry, leftover-mark
+ * cleanup, storing it and marking the comments it applied. `runId` is the run
+ * making it, recorded on the row for the stale-ad sweep. The temporary copies
+ * are deleted however it ends. Never throws.
+ */
+export async function runEdit(job: EditJob, runId?: string): Promise<AdToolResult> {
+  try {
+    return await makeEdit(job, runId);
+  } finally {
+    if (job.temp.length) await supabase().storage.from(AD_BUCKET).remove(job.temp).catch(() => undefined);
+  }
+}
+
+async function makeEdit(job: EditJob, runId?: string): Promise<AdToolResult> {
+  const { campaignId, adId, parent, pins, instruction, prompt, imageUrls } = job;
+  const label = `“${parent.headline}”`;
+  const db = supabase();
 
   const startedAt = Date.now();
-  const pinned = pins.length ? `${pins.length} ${pins.length === 1 ? "comment" : "comments"}` : "";
-  await setAdStage(
-    campaignId,
-    adId,
-    `Applying ${[pinned, instruction && "your change"].filter(Boolean).join(" and ")}`,
-  );
   try {
+    if (runId) {
+      await db.from("campaign_ads").update({ run_id: runId }).eq("id", adId).eq("status", "generating");
+    }
+    await throwIfStopped(adId); // stopped before it started: don't pay for the image
+    // The image before the edit: the checks compare the result with it.
+    const original = await db.storage.from(AD_BUCKET).download(parent.image_path);
+    if (original.error || !original.data) throw new Error("the ad's image went missing");
+    const before = new Uint8Array(await original.data.arrayBuffer());
     // Check against the image before the edit. With an overall request the
     // whole ad may legitimately change, so drift only counts for pins-only edits.
     const attempt = async (extra?: string) => {
@@ -350,51 +442,61 @@ Change only what is requested. Return the whole of image 1, and don't draw the p
       : best.check.unchanged;
     if (nothingApplied) {
       await throwIfStopped(adId);
-      await db.from("campaign_ads").delete().eq("id", adId);
-      return {
-        ok: false,
-        summary: `The image model returned the ad for ${label} unchanged${tries > 1 ? ", twice" : ""}, so no new version was made. The comments are still open: try describing the change more specifically (say what should be there instead).`,
-      };
+      // Kept as a failed version with the reason, so the chat and the studio
+      // can say what happened (the edit runs on its own, after the reply).
+      const summary = `The image model returned the ad for ${label} unchanged${tries > 1 ? ", twice" : ""}, so no new version was made. The comments are still open: try describing the change more specifically (say what should be there instead).`;
+      await failAdRow(adId, summary);
+      return { ok: false, summary };
     }
 
-    // Leftover marks (numbered circles, boxes, stray digits the model drew):
-    // one combined removal edit, kept if it leaves fewer. Only when the step
-    // has time left for another image (an edit runs as one step).
+    // Leftover marks (numbers, discs, boxes or pins from the location map the
+    // model drew into the ad): a removal edit, up to twice, each kept only if
+    // it leaves fewer. A version that still has one is never saved.
     let image = best.image;
-    if (Date.now() - startedAt < CLEANUP_BEFORE_MS) {
-      const marks = await findArtifacts(image.bytes);
-      if (marks.length) {
-        console.warn(`[ads] edit left ${marks.length} mark(s); removing`);
-        await throwIfStopped(adId);
-        await setAdStage(campaignId, adId, "Removing leftover marks");
-        const box = {
-          left: Math.min(...marks.map((m) => m.box.left)),
-          top: Math.min(...marks.map((m) => m.box.top)),
-          right: Math.max(...marks.map((m) => m.box.right)),
-          bottom: Math.max(...marks.map((m) => m.box.bottom)),
-        };
-        const cleaned = await fixAd({
-          campaignId,
-          adId,
-          draft: image,
-          issue: {
-            kind: "artifact",
-            problem: `Leftover marks: ${marks.map((m) => m.where).join("; ")}.`,
-            fix: "Remove every one of these marks completely and fill each spot with what would naturally be behind it.",
-            where: marks.map((m) => m.where).join("; "),
-            box,
-            x: (box.left + box.right) / 2,
-            y: (box.top + box.bottom) / 2,
-          },
-          productUrls: [],
-          headline: parent.headline,
-          cta: parent.cta,
-        }).catch((error) => {
-          console.error("[ads] removing leftover marks failed", error);
-          return null;
-        });
-        if (cleaned && (await findArtifacts(cleaned.bytes)).length < marks.length) image = cleaned;
+    let marks = await findArtifacts(image.bytes);
+    for (let attempt = 1; marks.length && attempt <= 2 && Date.now() - startedAt < CLEANUP_BEFORE_MS; attempt++) {
+      console.warn(`[ads] edit left ${marks.length} mark(s); removing (attempt ${attempt})`);
+      await throwIfStopped(adId);
+      await setAdStage(campaignId, adId, "Removing leftover marks");
+      const box = {
+        left: Math.min(...marks.map((m) => m.box.left)),
+        top: Math.min(...marks.map((m) => m.box.top)),
+        right: Math.max(...marks.map((m) => m.box.right)),
+        bottom: Math.max(...marks.map((m) => m.box.bottom)),
+      };
+      const cleaned = await fixAd({
+        campaignId,
+        adId,
+        draft: image,
+        issues: [{
+          kind: "artifact",
+          problem: `Leftover marks: ${marks.map((m) => m.where).join("; ")}.`,
+          fix: "Remove every one of these marks completely and fill each spot with what would naturally be behind it.",
+          where: marks.map((m) => m.where).join("; "),
+          box,
+          x: (box.left + box.right) / 2,
+          y: (box.top + box.bottom) / 2,
+        }],
+        productUrls: [],
+        headline: parent.headline,
+        cta: parent.cta,
+      }).catch((error) => {
+        console.error("[ads] removing leftover marks failed", error);
+        return null;
+      });
+      if (!cleaned) continue;
+      const left = await findArtifacts(cleaned.bytes);
+      if (left.length < marks.length) {
+        image = cleaned;
+        marks = left;
       }
+    }
+    if (marks.length) {
+      await throwIfStopped(adId);
+      const summary = `The image model drew a marker into the edited ad for ${label} (${marks.map((m) => m.where).join("; ")}) and it couldn't be removed, so no version was saved. The comments are still open: apply them again.`;
+      console.warn(`[ads] edit kept ${marks.length} mark(s); not saving it`);
+      await failAdRow(adId, summary);
+      return { ok: false, summary };
     }
 
     const { path } = await storeAdImage(campaignId, adId, image, { retained: kept });

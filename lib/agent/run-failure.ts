@@ -39,6 +39,9 @@ async function failureOf(runId: string): Promise<string | null> {
     if (/credit balance|insufficient_funds/i.test(message)) {
       return "The AI service (Vercel AI Gateway) is out of credits, so the agent can't reply. Add credits to the Gateway, then press Try again.";
     }
+    if (/didn't respond in time|TimeoutError|timed out/i.test(message)) {
+      return "The AI model didn't respond in time, so the agent stopped. Press Try again.";
+    }
     const detail = message.split("\n")[0].replace(/^.*failed after \d+ retries: /, "").slice(0, 200);
     return `The agent stopped with an error${detail ? `: ${detail}` : "."}`;
   } catch {

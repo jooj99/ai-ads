@@ -14,8 +14,21 @@ import { logoImage } from "@/lib/ads/brand-assets";
 import { inlineIfLocal, isLocalUrl } from "@/lib/reachable";
 import { ResearchSession } from "@/lib/research/state";
 import { findBrandVisuals } from "@/lib/research/steps";
+import { ensureProductNotes, storeContext } from "@/lib/research/product-notes";
 import type { AdVerification } from "@/lib/ads/flow";
-import { checkDraft, finishAd, repairDraft, startAd, type AdJob, type GenerateAdInput } from "@/lib/ads/generate";
+import {
+  checkDraft,
+  draftAd,
+  finishAd,
+  prepareAd,
+  repairDraft,
+  type AdDraftJob,
+  type AdJob,
+  type GenerateAdInput,
+} from "@/lib/ads/generate";
+import { prepareEdit, runEdit, type EditAdInput, type EditJob } from "@/lib/ads/edit";
+import { broadcastAdActivity } from "@/lib/ads/activity";
+import { failAdRow } from "@/lib/ads/render";
 import type { AdIssue } from "@/lib/ads/verify";
 
 /**
@@ -25,14 +38,44 @@ import type { AdIssue } from "@/lib/ads/verify";
  * are plain JSON.
  */
 
-// --- a new ad, one phase per step (the loop is lib/ads/flow.ts) ----------------
-// Each phase, and each repair edit, fits one step's time limit; split up, a
-// draft plus three repair rounds can take minutes, and a crash resumes where
-// it was.
+// --- ads and edits, each in its own run ------------------------------------
+// The agent prepares an ad or edit inside its turn (a few seconds: checks the
+// request, builds the brief, records "Ad N") and starts a separate workflow
+// run that makes it (workflows/ads.ts). The turn doesn't wait for the image,
+// so the reply comes at once, each ad finishes on its own, and the user can
+// keep chatting or edit a finished ad meanwhile. A new ad's run is one step
+// per phase (draft, check, each repair edit, finish), so a crash resumes
+// where it was.
 
-export async function adStart(campaignId: string, runId: string, input: GenerateAdInput, toolCallId: string) {
+export async function adPrepare(campaignId: string, agentRunId: string, input: GenerateAdInput, toolCallId: string) {
   "use step";
-  return startAd(campaignId, input, { toolCallId, runId });
+  return prepareAd(campaignId, input, { toolCallId, runId: agentRunId });
+}
+
+export async function adDraft(prepared: AdDraftJob, runId: string) {
+  "use step";
+  return draftAd(prepared, runId);
+}
+
+export async function editPrepare(campaignId: string, agentRunId: string, input: EditAdInput, toolCallId: string) {
+  "use step";
+  return prepareEdit(campaignId, input, { toolCallId, runId: agentRunId });
+}
+
+/**
+ * The run that would make a prepared ad or edit couldn't start: its row is
+ * marked failed with the reason at once (instead of "Making…" until the
+ * 10-minute sweep), and the Campaigns list and the page hear about it.
+ */
+export async function adStartFailed(campaignId: string, adId: string, reason: string) {
+  "use step";
+  await failAdRow(adId, reason);
+  await broadcastAdActivity(campaignId);
+}
+
+export async function editMake(job: EditJob, runId: string) {
+  "use step";
+  return runEdit(job, runId);
 }
 
 export async function adCheck(job: AdJob, path: string) {
@@ -40,9 +83,9 @@ export async function adCheck(job: AdJob, path: string) {
   return checkDraft(job, path);
 }
 
-export async function adRepair(job: AdJob, path: string, issue: AdIssue, round: number, edit: number) {
+export async function adRepair(job: AdJob, path: string, issues: AdIssue[], round: number) {
   "use step";
-  return repairDraft(job, path, issue, round, edit);
+  return repairDraft(job, path, issues, round);
 }
 
 export async function adFinish(job: AdJob, path: string, verification: AdVerification) {
@@ -74,8 +117,16 @@ export async function loadAgentSetup(
   campaignId: string,
   mode: "chat" | "research",
   submitted: { headline: string; cta: string }[],
+  chosen: string[] = [],
 ): Promise<{ model: string; instructions: string }> {
   "use step";
+  // Products just picked on the card: write their notes (how each works)
+  // first, so the ideas the agent writes next stage them correctly.
+  if (chosen.length) {
+    const kit = (await getCampaignResearch(campaignId))?.kit;
+    const picked = (kit?.catalog ?? []).filter((p) => chosen.includes(p.id));
+    if (picked.length && kit) await ensureProductNotes(campaignId, picked, storeContext(kit)).catch(() => undefined);
+  }
   return { model: AGENT_MODEL, instructions: await buildInstructions(campaignId, mode, submitted) };
 }
 
@@ -198,6 +249,8 @@ export async function saveRunThread(
   campaignId: string,
   runId: string,
   continuing: AgentUIMessage | null,
+  /** Why the turn failed, if it did: saved as a closing line so the thread says the reply stopped. */
+  failure?: string,
 ): Promise<void> {
   "use step";
   const chunks = getRun(runId)
@@ -214,6 +267,12 @@ export async function saveRunThread(
 
   const campaign = await getCampaign(campaignId);
   if (campaign?.agentRunId !== runId) return; // a newer turn owns the thread now
+  if (failure) {
+    const note = { type: "text" as const, text: `(This reply stopped early: ${failure}. Send a message to try again.)` };
+    reply = reply
+      ? { ...reply, parts: [...reply.parts, note] }
+      : { id: continuing?.id ?? `msg-${generateId()}`, role: "assistant", parts: [...(continuing?.parts ?? []), note] };
+  }
   if (reply && reply.parts.length) {
     reply = { ...reply, id: continuing?.id ?? (reply.id || `msg-${generateId()}`) };
     const thread = await getChat(campaignId);

@@ -6,6 +6,7 @@ import { firecrawlClient } from "@/lib/research/page";
 import { ResearchSession, type Actor } from "@/lib/research/state";
 import * as steps from "@/lib/research/steps";
 import { StepPrerequisiteError, type StepContext, type StepResult } from "@/lib/research/steps";
+import { firecrawlNote, firecrawlProblem, watchFirecrawl, type FirecrawlProblem } from "@/lib/research/firecrawl-errors";
 
 /** A full run that hasn't saved progress for this long is dead (claim_research uses the same rule). */
 const STALE_MS = 5 * 60_000;
@@ -36,14 +37,22 @@ export function researchTools(campaignId: string, runId?: string) {
     if (campaign?.status === "researching" && !ownRun && Date.now() - started < STALE_MS) {
       return { ok: false, summary: "A full research run is in progress; wait for it to finish before changing research." };
     }
+    // Firecrawl running out of credits or hitting its rate limit is said
+    // plainly in the step's summary, even when the step got by without it.
+    const problems = new Set<FirecrawlProblem>();
     try {
       const actor = typeof by === "function" ? by({ researchRun: campaign?.status === "researching" && ownRun }) : by;
       const session = await ResearchSession.open(campaignId, { by: actor, force: Boolean(force) });
-      return await work({ session, fc });
+      const watched = await watchFirecrawl(() => Promise.resolve(work({ session, fc })));
+      watched.problems.forEach((p) => problems.add(p));
+      const note = firecrawlNote(problems);
+      return note ? { ...watched.result, summary: `${watched.result.summary}${note}` } : watched.result;
     } catch (error) {
       if (error instanceof StepPrerequisiteError) return { ok: false, summary: error.message };
       console.error("[agent] research tool failed", error);
-      return { ok: false, summary: "That research step failed unexpectedly. Try again, or try another way." };
+      const problem = firecrawlProblem(error);
+      if (problem) problems.add(problem);
+      return { ok: false, summary: `That research step failed.${firecrawlNote(problems) || " Try again, or try another way."}` };
     }
   }
 

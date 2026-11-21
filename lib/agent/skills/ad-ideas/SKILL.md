@@ -19,7 +19,7 @@ Each idea plays on one audience segment, one value-prop point or one voice trait
 
 ## How the product is used
 
-Work out how each product is actually used from its photos and description before you stage it: how it's held or worn, where each part sits, what it attaches to and how. Stage it only that way. The setting, the people, the props and the light are yours to invent; how the product works is not. If the photos don't make a part's use clear, keep the product in a plain, natural use (held normally, worn normally, set on a surface) rather than guessing a clever one.
+Work out how each product is actually used before you stage it: how it's held or worn, where each part sits, what it attaches to and how. Products the user picked have notes in your instructions ("How these products work": what it is, its parts, its use, and what it never has), read from their own photos: follow them exactly, and never pitch anything their "Never" rules out. Without notes, go by the photos and description. Stage it only that way. The setting, the people, the props and the light are yours to invent; how the product works is not. If the photos don't make a part's use clear, keep the product in a plain, natural use (held normally, worn normally, set on a surface) rather than guessing a clever one.
 
 ## Two styles
 

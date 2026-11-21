@@ -2,6 +2,7 @@ import "server-only";
 
 import type { Skill } from "@/lib/agent/skills";
 import type { CampaignResearch, SavedAd, SavedHeadline } from "@/lib/campaigns";
+import { notesText } from "@/lib/research/product-notes";
 
 /**
  * The ad agent's instructions for one campaign: what research found (as
@@ -47,6 +48,15 @@ export function agentInstructions(
           })
           .join("\n")
       : "";
+  // How products work, for the ones that have notes (written when they're
+  // first picked or put in an ad): ideas and edits stage them only that way.
+  const noted = catalog.flatMap((p) => {
+    const text = notesText(p);
+    return text ? [`- ${text} (id: ${p.id})`] : [];
+  });
+  const notesFact = noted.length
+    ? `How these products work (read from their own photos; stage them only this way, never add what "Never" lists):\n${noted.join("\n")}`
+    : "";
   const catalogFact = catalogList
     ? `Everything in the catalog (${catalog.length} ${noun}):\n${catalogList}`
     : catalog.length
@@ -67,6 +77,7 @@ export function agentInstructions(
     kit?.productTypes.length && `Kinds of ${noun}: ${kit.productTypes.map((t) => t.name).join(", ")}`,
     heroes && `Hero ${noun} picked for ads:\n${heroes}`,
     catalogFact,
+    notesFact,
     kit?.visuals?.length
       ? `Brand visuals (the brand's own graphics from its site; ${services ? "for this service brand, prefer them in minimal ideas (visual \"brand_graphic\")" : "ideas with visual \"brand_graphic\" or \"product_graphic\" may use them when they fit"}; editAd's include.visuals takes their numbers):\n${kit.visuals.map((v, i) => `- V${i + 1}: ${v.description}`).join("\n")}`
       : `Brand visuals: none on the brand's site, so don't pitch ideas with visual "brand_graphic" or "product_graphic" (use "product" or "none").`,
@@ -107,7 +118,7 @@ Your job is to make creative, ready-to-run ads with the user, in three steps: wh
 2. Ideas. With the ${noun} chosen, call readSkill("ad-ideas") (once per conversation is enough), then call proposeIdeas with about 5 ideas for those items, following the playbook: a mix of photographic scenes and minimal graphic ads (more minimal ones for services and software), each with a 1–3 sentence pitch. Don't list the ideas in your text: the tool shows them as cards. Before the card, write at most one short sentence.
 3. Ads. When the user continues from the idea card (the proposeIdeas result's "picked" list) or sends ideas from an earlier card ("Ideas from an earlier set: …"): say in one short sentence that you're making them, then call generateAd once per picked idea, all in the same step so they run in parallel, with the idea's headline, cta and productIds, and idea = its title, style, visual, pitch and direction. Their headlines are already saved. One ad per idea unless they ask for more takes.
 - Feedback on ideas ("more playful", "a different setting", "more ideas", "funnier"): call proposeIdeas again with new ideas that apply it. If a proposeIdeas result has an empty "picked" list, they replied in chat instead of using the card; respond to what they wrote.
-- generateAd applies the brand's colors, fonts and voice itself, and the idea's creative direction; you choose the idea, headline and products. Before an ad is shown it's checked against the real logo and products (a logo that isn't the real one or sits in a box, a wrong or invented product or screen) and repaired automatically, one focused edit per problem in a single repair pass; the tool summary says so. Mention a fix in a few words. If the summary says something is still not right, the ad is shown with a warning beside it: say what's wrong in a sentence and offer to remake it. When the ads come back, reply in one or two sentences: how many are ready, and that they're in the Ads tab (where they can be opened or downloaded). If one failed, say why from its summary. When the reason sounds temporary (storing the image failed, a timeout, the image service was busy or returned a server error), say in one short sentence that you're trying it again, then call generateAd again with the same headline, CTA and products, once: the retry replaces the failed ad and keeps its number. For other failures, or if the retry fails too, explain and offer to retry. When the user asks to retry a failed ad ("Try Ad 4 again (ad <id>)"), say so in a few words and call generateAd with retryOf = that id and its headline and CTA from the failed ads list; it reuses the ad's products and idea. Don't describe the images in detail; you can't see them.
+- generateAd applies the brand's colors, fonts and voice itself, and the idea's creative direction; you choose the idea, headline and products. It returns as soon as the ad is prepared ("Started Ad N"): each ad is then made on its own, in about a minute, while the conversation goes on. You don't wait for it and won't see the result in this turn. Before an ad is shown it's checked against the real logo and products and repaired automatically; the chat and the Ads tab show each ad as it finishes, with any fix, warning, unchecked note or failure (and a Try again button). So after calling generateAd, reply in one short sentence: how many ads you started and that they'll appear here and in the Ads tab as each is ready; they can keep chatting or edit a finished ad meanwhile. If generateAd returns ok: false (a product id not in the catalog, a missing attachment), it wasn't started: fix what the summary says (getCatalog, addProductFromLink) and call it again, or explain. Outcomes of earlier ads are in the ads list and failed ads list above: if the user asks how an ad went, answer from those. When the user asks to retry a failed ad ("Try Ad 4 again (ad <id>)"), say so in a few words and call generateAd with retryOf = that id and its headline and CTA from the failed ads list; it reuses the ad's products and idea. Don't describe the images in detail; you can't see them.
 - When the user asks for another take of an ad or idea, or to retry or remake one, call generateAd again with the same headline, CTA, products and idea. For new copy they write, save it with saveHeadline first.
 - Ads are numbered (Ad 1, Ad 2…) and each edit adds a version (v1, v2…) to the same number. Always refer to ads by number in your replies. When the user names an ad by number, use the id of its current version unless they name a version.
 - When the user asks to delete an ad or a version, call deleteAd (scope "ad" for the whole ad, "version" for one version). If it's ambiguous which they mean, ask first. Never delete unprompted.
@@ -119,7 +130,7 @@ Your job is to make creative, ready-to-run ads with the user, in three steps: wh
   - include.fonts or include.voice for type or tone changes;
   - references for images the user attached in chat that they want used.
   Combine them when the change needs several (e.g. "swap in the green case and use our real logo" → productIds and logo). Include only what the change needs; extra images can make the model change more than asked. If the request names something the kit doesn't have, say so instead of guessing.
-- Editing ads: the user can click spots on an ad to pin comments, then press Apply, which sends you "Apply my comments to Ad N … (ad <id>)". Then call editAd with that adId and no instruction: the open comments and where they're pinned are sent to the image model automatically. Read the comments in the ads list first and add the include each one needs (as above). When they describe a change to an ad in chat instead ("make the background warmer"), call editAd with adId and an instruction written as a clear edit request; if it's unclear which ad they mean, ask. editAd keeps the headline, CTA and products: to change the wording, save the new headline and call generateAd instead. Each edit is a new version; the earlier one stays. After an edit, reply in one or two sentences built from the tool result's changes (what actually changed, found by comparing the ad before and after), e.g. "v3 of Ad 2 is ready: I removed the dried flowers and turned the button black." If a requested change is missing from that list, say it didn't take and offer to try again. Don't describe anything beyond the changes list; you can't see the images.
+- Editing ads: the user can click a spot on an ad to pin a comment, or drag a box over an area to comment on all of it, then press Apply, which sends you "Apply my comments to Ad N … (ad <id>)". Then call editAd with that adId and no instruction: the open comments and where they're pinned are sent to the image model automatically. Read the comments in the ads list first and add the include each one needs (as above). When they describe a change to an ad in chat instead ("make the background warmer"), call editAd with adId and an instruction written as a clear edit request; if it's unclear which ad they mean, ask. editAd keeps the headline, CTA and products: to change the wording, save the new headline and call generateAd instead. Each edit is a new version; the earlier one stays. editAd also returns as soon as the edit is prepared ("Started the edit of Ad N"); the new version is made on its own, in about a minute, and the chat and the Ads tab show it with what actually changed (found by comparing the ad before and after). So reply in one short sentence that the edit is on its way; don't describe the result, you won't see it in this turn. If editAd returns ok: false (nothing to change, the ad isn't finished), it wasn't started: say why. Earlier edits' changes are in the ads list above.
 - When the user writes a headline or CTA in chat, or asks to tweak a saved one: call saveHeadline with the exact copy (and removeHeadline for the version it replaces), then confirm in one sentence. When they ask to drop one, call removeHeadline.
 - The brand kit and headline lists above already reflect every change made so far, including your own tool calls and what the user just submitted. When they match what was asked, that's because the change worked: never claim an edit or pick "was already" there, and never take back an edit whose tool result says it succeeded.
 - Research is also yours to steer. When the user asks to read a page, fix the logo or colors, change goods/services, add or remove products, regroup the catalog, change the heroes, or redo research, first call readSkill("research") (once per conversation is enough), then use the research tools it describes. They keep the user's edits unless the user explicitly asks to reset them.
@@ -145,7 +156,14 @@ function describeAds(ads: SavedAd[]): string {
   const failedList = failed.length
     ? `\n\nFailed ads (retry one with generateAd's retryOf = its id, and its headline and CTA):\n${failed.join("\n")}`
     : "";
-  if (!ready.length) return `No ads have been made yet.${failedList}`;
+  // Ads and edits still being made, each in its own run: they finish on their own.
+  const making = ads
+    .filter((a) => a.status === "generating")
+    .map((a) => `- ${a.parentId ? `A new version of Ad ${a.number}` : `Ad ${a.number}`}: "${a.headline}"; ${a.stage ?? "starting"}`);
+  const makingList = making.length
+    ? `\n\nBeing made right now (they appear in the chat and Ads tab when ready; don't start them again):\n${making.join("\n")}`
+    : "";
+  if (!ready.length) return `No ads have been made yet.${makingList}${failedList}`;
   const byNumber = new Map<number, SavedAd[]>();
   for (const ad of [...ready].sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
     byNumber.set(ad.number, [...(byNumber.get(ad.number) ?? []), ad]);
@@ -158,10 +176,21 @@ function describeAds(ads: SavedAd[]): string {
       const open = newest.comments.filter((c) => c.status === "open");
       const list = versions.map((v, i) => `v${i + 1} id ${v.id}`).join(", ");
       const notes = open.map(
-        (c, i) => `    open comment ${i + 1} on v${versions.length}, at ${Math.round(c.x * 100)}% across, ${Math.round(c.y * 100)}% down: "${c.body}"`,
+        (c, i) =>
+          `    open comment ${i + 1} on v${versions.length}, ${
+            c.w && c.h
+              ? `on the area from ${Math.round((c.x - c.w / 2) * 100)}% to ${Math.round((c.x + c.w / 2) * 100)}% across and ${Math.round((c.y - c.h / 2) * 100)}% to ${Math.round((c.y + c.h / 2) * 100)}% down`
+              : `at ${Math.round(c.x * 100)}% across, ${Math.round(c.y * 100)}% down`
+          }: "${c.body}"`,
       );
-      return [`- Ad ${number}: "${newest.headline}" / "${newest.cta}"; versions: ${list} (v${versions.length} is current)`, ...notes].join("\n");
+      // How the current version came out: what its edit changed, what the check still found, or that it wasn't checked.
+      const outcome = [
+        newest.changes?.length ? `    v${versions.length} changed: ${newest.changes.join("; ")}` : "",
+        newest.issues.length ? `    still not right after the automatic fixes: ${newest.issues.join("; ")}` : "",
+        newest.unchecked ? `    not checked: ${newest.unchecked}` : "",
+      ].filter(Boolean);
+      return [`- Ad ${number}: "${newest.headline}" / "${newest.cta}"; versions: ${list} (v${versions.length} is current)`, ...outcome, ...notes].join("\n");
     })
     .join("\n");
-  return `Ads made so far, by number (the user refers to them as "Ad 3", "the second version of Ad 2", etc.; pass the matching id to editAd and deleteAd):\n${lines}${failedList}`;
+  return `Ads made so far, by number (the user refers to them as "Ad 3", "the second version of Ad 2", etc.; pass the matching id to editAd and deleteAd):\n${lines}${makingList}${failedList}`;
 }

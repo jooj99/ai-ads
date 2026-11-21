@@ -6,12 +6,14 @@ import type {
   BrandFont,
   BrandKit,
   CatalogItem,
+  ProductNotes,
   ResearchNotice,
   ResearchStep,
   SelectedProduct,
 } from "@/lib/research/types";
 import { adActivity } from "@/lib/ads/activity";
 import { expireStaleAds } from "@/lib/ads/expire";
+import { cancelAd } from "@/lib/ads/render";
 import { adImageUrl, deleteAdFiles } from "@/lib/ads/store";
 import type { AdActivity } from "@/lib/realtime";
 import { deleteFontFiles } from "@/lib/research/font-store";
@@ -195,6 +197,7 @@ export async function getCampaignResearch(id: string): Promise<CampaignResearch 
               images: p.images ?? [],
               isHero: p.is_hero,
               origin: p.origin ?? "research",
+              ...(p.notes && { notes: p.notes as ProductNotes }),
             }),
           ),
         }
@@ -423,8 +426,12 @@ export async function removeHeadline(id: string, h: { headline: string; cta: str
 /** A comment pinned to a spot on an ad: x/y are fractions of its width/height. */
 export type AdComment = {
   id: string;
+  /** The spot (a pin) or the middle of the area (a box), as fractions of the ad. */
   x: number;
   y: number;
+  /** A box's width and height as fractions of the ad; null for a pin. */
+  w: number | null;
+  h: number | null;
   body: string;
   /** open → applied (by an edit) → resolved or unresolved (the user's answer). */
   status: "open" | "applied" | "resolved" | "unresolved";
@@ -464,6 +471,8 @@ export type SavedAd = {
   issues: string[];
   /** Repair rounds the check ran on it (0–3). */
   fixRounds: number;
+  /** Why it wasn't checked against the real logo and products (the check never answered), or null. */
+  unchecked: string | null;
   /** The picked idea it was made from, if any. */
   idea: { title: string; concept: string } | null;
   /** While generating: what it's doing now ("Fixing the logo (round 1 of 3)"). */
@@ -480,13 +489,59 @@ export async function listCurrentAds(id: string): Promise<SavedAd[]> {
   return expired ? listAds(id) : ads;
 }
 
+/** Saves a product's notes (how it works), by its catalog id. */
+export async function saveProductNotes(campaignId: string, productId: string, notes: ProductNotes): Promise<void> {
+  if (!UUID.test(campaignId)) throw new Error("Unknown campaign");
+  const { error } = await supabase()
+    .from("campaign_products")
+    .update({ notes })
+    .eq("campaign_id", campaignId)
+    .eq("source_id", productId);
+  if (error) throw error;
+}
+
+/** The key a dismissed "not checked" note is stored under (next to dismissed problems' texts). */
+export const UNCHECKED = "unchecked";
+
+/**
+ * Dismisses one warning on an ad version: a remaining problem (by its text,
+ * as `SavedAd.issues` shows it) or the not-checked note (`UNCHECKED`). It
+ * stays dismissed; the check's record is kept as it was.
+ */
+export async function dismissAdIssue(campaignId: string, adId: string, issue: string): Promise<void> {
+  if (!UUID.test(campaignId) || !UUID.test(adId)) throw new Error("Unknown ad");
+  const db = supabase();
+  const { data, error } = await db
+    .from("campaign_ads")
+    .select("dismissed_issues")
+    .eq("campaign_id", campaignId)
+    .eq("id", adId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error("That ad doesn't exist any more.");
+  const dismissed = (data.dismissed_issues as string[] | null) ?? [];
+  if (dismissed.includes(issue)) return;
+  const { error: updateError } = await db
+    .from("campaign_ads")
+    .update({ dismissed_issues: [...dismissed, issue] })
+    .eq("campaign_id", campaignId)
+    .eq("id", adId);
+  if (updateError) throw updateError;
+}
+
+/** Stops an ad or edit being made: cancels its image job and its run, and removes it. False when it wasn't being made. */
+export async function stopAd(campaignId: string, adId: string): Promise<boolean> {
+  if (!UUID.test(campaignId) || !UUID.test(adId)) return false;
+  return cancelAd(campaignId, adId);
+}
+
 /** The campaign's ads, newest first. */
 export async function listAds(id: string): Promise<SavedAd[]> {
   if (!UUID.test(id)) return [];
   const { data, error } = await supabase()
     .from("campaign_ads")
     .select(
-      "id, number, parent_id, instruction, retained, changes, headline, cta, product_ids, status, image_path, width, height, error, created_at, tool_call_id, verification, idea, stage, ad_comments!ad_comments_ad_id_fkey(id, x, y, body, status, applied_ad_id, created_at), applied:ad_comments!ad_comments_applied_ad_id_fkey(id, x, y, body, status, applied_ad_id, created_at)",
+      "id, number, parent_id, instruction, retained, changes, headline, cta, product_ids, status, image_path, width, height, error, created_at, tool_call_id, verification, dismissed_issues, idea, stage, ad_comments!ad_comments_ad_id_fkey(id, x, y, w, h, body, status, applied_ad_id, created_at), applied:ad_comments!ad_comments_applied_ad_id_fkey(id, x, y, w, h, body, status, applied_ad_id, created_at)",
     )
     .eq("campaign_id", id)
     .order("created_at", { ascending: false });
@@ -511,10 +566,14 @@ export async function listAds(id: string): Promise<SavedAd[]> {
     createdAt: row.created_at,
     toolCallId: row.tool_call_id ?? null,
     stage: row.status === "generating" ? (row.stage ?? null) : null,
+    // The warnings still shown: the check's remaining problems the user hasn't dismissed.
     issues: ((row.verification as { remaining?: { problem?: string }[] } | null)?.remaining ?? []).flatMap((i) =>
-      i.problem ? [i.problem] : [],
+      i.problem && !(row.dismissed_issues ?? []).includes(i.problem) ? [i.problem] : [],
     ),
     fixRounds: (row.verification as { rounds?: number } | null)?.rounds ?? 0,
+    unchecked: (row.verification as { stalled?: boolean } | null)?.stalled && !(row.dismissed_issues ?? []).includes(UNCHECKED)
+      ? "The automatic check didn't respond after 3 tries, so this ad wasn't checked against the real logo and products. Look them over before using it."
+      : null,
     idea: (row.idea as { title?: string } | null)?.title
       ? {
           title: (row.idea as { title: string }).title,
@@ -558,6 +617,8 @@ type CommentRow = {
   id: string;
   x: number;
   y: number;
+  w: number | null;
+  h: number | null;
   body: string;
   /** open → applied (by an edit) → resolved or unresolved (the user's answer). */
   status: "open" | "applied" | "resolved" | "unresolved";
@@ -565,23 +626,25 @@ type CommentRow = {
   created_at: string;
 };
 
-/** Pins a comment to a spot on one of the campaign's ads. */
+/** Pins a comment to a spot, or to an area (a box: `w`/`h`), on one of the campaign's ads. */
 export async function addAdComment(
   id: string,
   adId: string,
-  comment: { x: number; y: number; body: string },
+  comment: { x: number; y: number; w?: number; h?: number; body: string },
 ): Promise<AdComment> {
   if (!UUID.test(id) || !UUID.test(adId)) throw new Error("Unknown ad");
   const { data, error } = await supabase()
     .from("ad_comments")
     .insert({ campaign_id: id, ad_id: adId, ...comment })
-    .select("id, x, y, body, status, applied_ad_id, created_at")
+    .select("id, x, y, w, h, body, status, applied_ad_id, created_at")
     .single<CommentRow>();
   if (error) throw error;
   return {
     id: data.id,
     x: data.x,
     y: data.y,
+    w: data.w ?? null,
+    h: data.h ?? null,
     body: data.body,
     status: data.status,
     appliedAdId: data.applied_ad_id,
@@ -601,6 +664,8 @@ function toComments(rows: unknown): AdComment[] {
       id: c.id,
       x: c.x,
       y: c.y,
+      w: c.w ?? null,
+      h: c.h ?? null,
       body: c.body,
       status: c.status,
       appliedAdId: c.applied_ad_id,
@@ -620,7 +685,7 @@ export async function reviewAdComment(id: string, commentId: string, resolved: b
   const db = supabase();
   const { data: comment, error } = await db
     .from("ad_comments")
-    .select("id, x, y, body, status, applied_ad_id")
+    .select("id, x, y, w, h, body, status, applied_ad_id")
     .eq("campaign_id", id)
     .eq("id", commentId)
     .maybeSingle();
@@ -651,6 +716,8 @@ export async function reviewAdComment(id: string, commentId: string, resolved: b
     ad_id: newest?.id ?? comment.applied_ad_id,
     x: comment.x,
     y: comment.y,
+    w: comment.w,
+    h: comment.h,
     body: comment.body,
   });
   if (insertError) throw insertError;

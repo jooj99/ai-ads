@@ -22,7 +22,7 @@ import {
   useEffect,
   useRef,
   useState,
-  type MouseEvent,
+  type PointerEvent,
   type ReactNode,
 } from "react";
 
@@ -86,6 +86,8 @@ export function AdStudio({
   onDelete,
   onAddComment,
   onDeleteComment,
+  onDismissIssue,
+  onStart,
   onEditComment,
   onApply,
   onReview,
@@ -99,11 +101,12 @@ export function AdStudio({
   /** The campaign's catalog, to show the products each ad was made with. */
   products: CatalogItem[];
   onDelete: (ad: SavedAd, scope: "version" | "ad") => void;
-  onAddComment: (
-    ad: SavedAd,
-    comment: { x: number; y: number; body: string },
-  ) => Promise<boolean>;
+  onAddComment: (ad: SavedAd, comment: NewComment) => Promise<boolean>;
   onDeleteComment: (ad: SavedAd, comment: AdComment) => void;
+  /** Dismisses one warning on a version: a remaining problem's text, or "unchecked". */
+  onDismissIssue: (ad: SavedAd, issue: string) => void;
+  /** Starts the products → ideas → ads flow in the chat, from the empty state (once research is done). */
+  onStart?: () => void;
   /** Rewrites an open comment's text; resolves true once saved. */
   onEditComment: (
     ad: SavedAd,
@@ -203,10 +206,17 @@ export function AdStudio({
         </span>
         <p className="font-medium">No ads yet</p>
         <p className="max-w-sm text-sm text-muted-foreground">
-          Submit headlines in the chat and the agent makes a 9:16 ad for each,
-          built on your product photos. Then click anywhere on an ad to comment,
-          and apply your comments to get a new version.
+          Pick the products to advertise and the ideas you like in the chat, and
+          the agent makes a 9:16 ad from each idea, built on your product photos.
+          Then click a spot or drag a box on an ad to comment, and apply your
+          comments to get a new version.
         </p>
+        {onStart && (
+          <Button className="mt-1" onClick={onStart}>
+            <SparklesIcon />
+            Pick products for ads
+          </Button>
+        )}
       </div>
     );
   }
@@ -269,6 +279,7 @@ export function AdStudio({
               })
             }
             onDeleteComment={(c) => removeComment(version, c)}
+            onDismissIssue={(issue) => onDismissIssue(version, issue)}
             onApply={(count) => onApply(version, count)}
             leavingComments={leavingComments}
             fading={adLeaving}
@@ -386,9 +397,9 @@ function AdRail({
                     {open}
                   </span>
                 )}
-                {(top.issues?.length ?? 0) > 0 && top.imageUrl && (
+                {((top.issues?.length ?? 0) > 0 || top.unchecked) && top.imageUrl && (
                   <span
-                    title="Still not right after the automatic fixes"
+                    title={top.unchecked ? "Not checked: the automatic check didn't respond" : "Still not right after the automatic fixes"}
                     className="absolute bottom-1 left-1 flex size-4 items-center justify-center rounded-full bg-brand-orange text-white shadow-sm"
                   >
                     <AlertTriangleIcon className="size-2.5" />
@@ -489,32 +500,49 @@ function AdCanvas({
   /** "v3" for a version id of this ad. */
   versionLabel: (id: string) => string;
   onReview: (comment: AdComment, resolved: boolean) => Promise<void>;
-  onAddComment: (comment: {
-    x: number;
-    y: number;
-    body: string;
-  }) => Promise<boolean>;
+  onAddComment: (comment: NewComment) => Promise<boolean>;
 }) {
-  const [draft, setDraft] = useState<{ x: number; y: number }>();
+  const [draft, setDraft] = useState<Spot>();
+  // A drag in progress: where it started and where the pointer is, as fractions.
+  const [drag, setDrag] = useState<{ x0: number; y0: number; x1: number; y1: number }>();
   const open = ad.comments.filter((c) => c.status === "open");
   // Pinned on this version, applied by a later edit, and still waiting for
   // "was it resolved?". Answered ones are done: resolved ones are deleted, and
   // unresolved ones live on as the copy re-opened on the newest version.
   const made = ad.comments.filter((c) => c.status === "applied");
 
-  function place(e: MouseEvent<HTMLDivElement>) {
+  // Press to pin a comment to a spot; drag to box an area and comment on all of it.
+  const at = (e: PointerEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const clamp = (n: number) => Math.min(1, Math.max(0, n));
+    return {
+      x: clamp((e.clientX - rect.left) / rect.width),
+      y: clamp((e.clientY - rect.top) / rect.height),
+    };
+  };
+  function startDrag(e: PointerEvent<HTMLDivElement>) {
     if (
       !canComment ||
+      e.button !== 0 ||
       (e.target as HTMLElement).closest("[data-pin],[data-draft]")
     )
       return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const clamp = (n: number) => Math.min(1, Math.max(0, n));
-    setDraft({
-      x: clamp((e.clientX - rect.left) / rect.width),
-      y: clamp((e.clientY - rect.top) / rect.height),
-    });
+    const p = at(e);
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
   }
+  function moveDrag(e: PointerEvent<HTMLDivElement>) {
+    if (!drag) return;
+    const p = at(e);
+    setDrag({ ...drag, x1: p.x, y1: p.y });
+  }
+  function endDrag() {
+    if (!drag) return;
+    setDrag(undefined);
+    const box = dragBox(drag);
+    setDraft(box ?? { x: drag.x0, y: drag.y0 });
+  }
+  const live = drag ? dragBox(drag) : undefined;
 
   // Beside the rail and details, the ad is as tall as the studio, unless the
   // width left over (100cqw minus --fixed) runs out first.
@@ -530,10 +558,17 @@ function AdCanvas({
     >
       {ad.status === "ready" && ad.imageUrl ? (
         <div
-          onClick={place}
-          title={canComment ? "Click anywhere to comment there" : undefined}
+          onPointerDown={startDrag}
+          onPointerMove={moveDrag}
+          onPointerUp={endDrag}
+          onPointerCancel={() => setDrag(undefined)}
+          title={
+            canComment
+              ? "Click a spot to comment there, or drag a box over an area"
+              : undefined
+          }
           className={cn(
-            "relative overflow-visible rounded-xl bg-background shadow-sm ring-1 ring-foreground/10 select-none",
+            "relative touch-none overflow-visible rounded-xl bg-background shadow-sm ring-1 ring-foreground/10 select-none",
             size,
             canComment && "cursor-crosshair",
           )}
@@ -590,14 +625,23 @@ function AdCanvas({
               }
             />
           ))}
+          {live && <BoxOutline spot={live} className="border-[#FF2D55]" />}
           {draft && (
             <DraftComment
+              key={`${draft.x},${draft.y},${draft.w ?? ""}`}
               at={draft}
               n={open.length + 1}
               onCancel={() => setDraft(undefined)}
               onSave={async (body) => {
-                const ok = await onAddComment({ ...draft, body });
-                if (ok) setDraft(undefined);
+                const saving = draft;
+                const ok = await onAddComment({
+                  x: saving.x,
+                  y: saving.y,
+                  ...(saving.w && saving.h && { w: saving.w, h: saving.h }),
+                  body,
+                });
+                // Only this draft closes: a spot clicked while it saved stays open.
+                if (ok) setDraft((d) => (d === saving ? undefined : d));
                 return ok;
               }}
             />
@@ -639,7 +683,63 @@ function AdCanvas({
   );
 }
 
+/** Where a comment goes: a spot (a pin) or an area (a box, `w`/`h`), centered on x/y, as fractions of the ad. */
+type Spot = { x: number; y: number; w?: number | null; h?: number | null };
+
+/** A new comment from the studio: its spot or box, and its text. */
+export type NewComment = { x: number; y: number; w?: number; h?: number; body: string };
+
+/** Drags shorter than this (as a fraction of the ad, either way) are a click: a pin. */
+const MIN_BOX = 0.03;
+
+/** The box a drag makes (centered, with its size), or undefined while it's still a click. */
+function dragBox(d: { x0: number; y0: number; x1: number; y1: number }): Spot | undefined {
+  const w = Math.abs(d.x1 - d.x0);
+  const h = Math.abs(d.y1 - d.y0);
+  if (w < MIN_BOX && h < MIN_BOX) return undefined;
+  return {
+    x: (d.x0 + d.x1) / 2,
+    y: (d.y0 + d.y1) / 2,
+    w: Math.max(w, MIN_BOX),
+    h: Math.max(h, MIN_BOX),
+  };
+}
+
+/** Where a comment's number sits: its spot, or a box's top-left corner. */
+function anchorOf(spot: Spot): { x: number; y: number } {
+  return spot.w && spot.h
+    ? { x: spot.x - spot.w / 2, y: spot.y - spot.h / 2 }
+    : { x: spot.x, y: spot.y };
+}
+
+/** A box comment's area on the ad: a dashed outline (solid while its card is open). */
+function BoxOutline({ spot, className }: { spot: Spot; className?: string }) {
+  if (!spot.w || !spot.h) return null;
+  return (
+    <span
+      aria-hidden
+      style={{
+        left: `${(spot.x - spot.w / 2) * 100}%`,
+        top: `${(spot.y - spot.h / 2) * 100}%`,
+        width: `${spot.w * 100}%`,
+        height: `${spot.h * 100}%`,
+      }}
+      className={cn(
+        "pointer-events-none absolute rounded-md border-2 border-dashed transition-opacity duration-200",
+        className,
+      )}
+    />
+  );
+}
+
 type PinKind = "open" | "made" | "review" | "unresolved";
+
+const BOX_STYLE: Record<PinKind, string> = {
+  open: "border-[#FF2D55] bg-[#FF2D55]/5",
+  made: "border-foreground/50",
+  review: "border-brand-yellow",
+  unresolved: "border-foreground/50",
+};
 
 const PIN_STYLE: Record<PinKind, string> = {
   open: "bg-[#FF2D55] text-white",
@@ -675,6 +775,7 @@ function Pin({
   const [open, setOpen] = useState(false);
   // Editing keeps the card open even when the pointer leaves it.
   const [editing, setEditing] = useState(false);
+  const anchor = anchorOf(comment);
   const icon =
     label ??
     (kind === "review" ? (
@@ -685,6 +786,17 @@ function Pin({
       <CheckIcon className="size-3" />
     ));
   return (
+    <>
+    {comment.w && comment.h ? (
+      <BoxOutline
+        spot={comment}
+        className={cn(
+          BOX_STYLE[kind],
+          (open || editing) && "border-solid",
+          leaving && "opacity-0",
+        )}
+      />
+    ) : null}
     <HoverCard
       open={(open || editing) && !leaving}
       onOpenChange={setOpen}
@@ -696,7 +808,7 @@ function Pin({
           type="button"
           data-pin
           aria-label={comment.body}
-          style={{ left: `${comment.x * 100}%`, top: `${comment.y * 100}%` }}
+          style={{ left: `${anchor.x * 100}%`, top: `${anchor.y * 100}%` }}
           className={cn(
             "absolute flex size-6 -translate-x-1/2 -translate-y-1/2 cursor-default items-center justify-center rounded-full text-xs font-bold shadow-md ring-2 ring-white transition-[scale,opacity] duration-200 ease-in",
             PIN_STYLE[kind],
@@ -747,6 +859,7 @@ function Pin({
         )}
       </HoverCardContent>
     </HoverCard>
+    </>
   );
 }
 
@@ -925,14 +1038,14 @@ function CheckOrX({
   );
 }
 
-/** The comment box for a spot just clicked: Enter saves, Escape cancels. */
+/** The comment box for a spot just clicked or an area just boxed: Enter saves, Escape cancels. */
 function DraftComment({
-  at,
+  at: spot,
   n,
   onSave,
   onCancel,
 }: {
-  at: { x: number; y: number };
+  at: Spot;
   n: number;
   onSave: (body: string) => Promise<boolean>;
   onCancel: () => void;
@@ -950,10 +1063,15 @@ function DraftComment({
     if (!ok) setSaving(false);
   }
 
-  // Open below the pin, or above it near the bottom, so it stays on the ad.
-  const up = at.y > 0.6;
+  // The number sits at the spot, or a box's top-left corner; the card opens
+  // below the box (or pin), or above it near the bottom, so it stays on the ad.
+  const at = anchorOf(spot);
+  const bottom = spot.h ? spot.y + spot.h / 2 : spot.y;
+  const up = bottom > 0.6;
+  const cardY = up ? at.y : bottom;
   return (
     <>
+      <BoxOutline spot={spot} className="border-[#FF2D55] bg-[#FF2D55]/5" />
       <span
         data-draft
         style={{ left: `${at.x * 100}%`, top: `${at.y * 100}%` }}
@@ -965,8 +1083,8 @@ function DraftComment({
         data-draft
         style={{
           // Centered on the pin, but kept inside the ad's edges.
-          left: `clamp(8px, calc(${at.x * 100}% - 8rem), calc(100% - 16rem - 8px))`,
-          top: `calc(${at.y * 100}% ${up ? "- 20px" : "+ 20px"})`,
+          left: `clamp(8px, calc(${(spot.w ? spot.x : at.x) * 100}% - 8rem), calc(100% - 16rem - 8px))`,
+          top: `calc(${cardY * 100}% ${up ? "- 20px" : "+ 20px"})`,
           transform: up ? "translateY(-100%)" : undefined,
         }}
         className="absolute z-10 flex w-64 max-w-[calc(100%-16px)] cursor-default flex-col gap-2 rounded-xl bg-background p-2.5 shadow-lg ring-1 ring-foreground/10"
@@ -1017,6 +1135,7 @@ function AdDetails({
   products,
   onPickVersion,
   onDeleteComment,
+  onDismissIssue,
   onApply,
   leavingComments,
   fading,
@@ -1030,6 +1149,7 @@ function AdDetails({
   products: CatalogItem[];
   onPickVersion: (id: string) => void;
   onDeleteComment: (c: AdComment) => void;
+  onDismissIssue: (issue: string) => void;
   onApply: (count: number) => void;
   leavingComments: string[];
   fading: boolean;
@@ -1065,7 +1185,12 @@ function AdDetails({
         <p className="text-lg leading-snug font-semibold">{ad.headline}</p>
       </div>
 
-      {(ad.issues?.length ?? 0) > 0 && <AdIssues issues={ad.issues} rounds={ad.fixRounds} />}
+      {(ad.issues?.length ?? 0) > 0 && (
+        <AdIssues issues={ad.issues} rounds={ad.fixRounds} onDismiss={onDismissIssue} />
+      )}
+      {ad.unchecked && ad.status === "ready" && (
+        <AdUnchecked note={ad.unchecked} onDismiss={() => onDismissIssue("unchecked")} />
+      )}
 
       {versions.length > 1 && (ad.changes?.length || ad.instruction) && (
         <ChangesBox
@@ -1109,7 +1234,7 @@ function AdDetails({
         ) : (
           <p className="text-xs text-muted-foreground">
             {isNewest
-              ? "Click a spot on the ad to say what should change there."
+              ? "Click a spot on the ad to say what should change there, or drag a box over an area to comment on all of it."
               : "Comments go on the newest version."}
           </p>
         )}
@@ -1165,19 +1290,61 @@ function AdDetails({
  * What the automatic check still found wrong with this version after its
  * repair rounds, so it's never mistaken for a clean ad.
  */
-function AdIssues({ issues, rounds }: { issues: string[]; rounds: number }) {
+function AdIssues({
+  issues,
+  rounds,
+  onDismiss,
+}: {
+  issues: string[];
+  rounds: number;
+  /** Dismisses one warning (the user has checked it, or doesn't mind it). */
+  onDismiss: (issue: string) => void;
+}) {
   return (
     <div className="flex flex-col gap-1.5 rounded-lg bg-brand-orange/10 p-3 ring-1 ring-brand-orange/30">
       <p className="flex items-center gap-1.5 text-sm font-medium">
         <AlertTriangleIcon className="size-4 shrink-0 text-brand-orange" />
         {rounds ? `Still not right after ${rounds} ${rounds === 1 ? "fix" : "fixes"}` : "Not quite right"}
       </p>
-      <ul className="flex list-disc flex-col gap-1 pl-5 text-xs text-muted-foreground">
+      <ul className="flex flex-col gap-1">
         {issues.map((issue) => (
-          <li key={issue}>{issue}</li>
+          <li key={issue} className="group/issue flex items-start gap-1.5 text-xs text-muted-foreground">
+            <span aria-hidden className="mt-[0.45rem] size-1 shrink-0 rounded-full bg-current" />
+            <span className="flex-1">{issue}</span>
+            <DismissButton onClick={() => onDismiss(issue)} />
+          </li>
         ))}
       </ul>
     </div>
+  );
+}
+
+/** The check never answered, so this version wasn't checked: said plainly, never mistaken for a clean ad. */
+function AdUnchecked({ note, onDismiss }: { note: string; onDismiss: () => void }) {
+  return (
+    <div className="flex flex-col gap-1 rounded-lg bg-brand-orange/10 p-3 ring-1 ring-brand-orange/30">
+      <p className="flex items-center gap-1.5 text-sm font-medium">
+        <AlertTriangleIcon className="size-4 shrink-0 text-brand-orange" />
+        <span className="flex-1">Not checked</span>
+        <DismissButton onClick={onDismiss} />
+      </p>
+      <p className="text-xs text-muted-foreground">{note}</p>
+    </div>
+  );
+}
+
+/** A warning's ✕: dismisses that one warning. */
+function DismissButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-label="Dismiss this warning"
+      title="Dismiss"
+      onClick={onClick}
+      className="-mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+    >
+      <XIcon className="size-3" />
+    </button>
   );
 }
 

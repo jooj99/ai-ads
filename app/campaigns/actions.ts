@@ -12,6 +12,8 @@ import {
   addHeadline,
   deleteAd,
   deleteAdComment,
+  dismissAdIssue,
+  stopAd,
   updateAdComment,
   reviewAdComment,
   deleteCampaign,
@@ -181,17 +183,38 @@ export async function deleteAdAction(
   return run(async () => void (await deleteAd(campaignId, adId, scope === "ad" ? "ad" : "version")), "Couldn't delete that ad.");
 }
 
+/** Dismisses one warning on an ad version (a remaining problem, or the not-checked note). */
+export async function dismissAdIssueAction(campaignId: string, adId: string, issue: string): Promise<ActionResult> {
+  await requireUser();
+  if (!id.safeParse(campaignId).success || !id.safeParse(adId).success) return { ok: false, error: "Unknown ad." };
+  if (!z.string().min(1).max(2000).safeParse(issue).success) return { ok: false, error: "Unknown warning." };
+  return run(async () => void (await dismissAdIssue(campaignId, adId, issue)), "Couldn't dismiss that warning.");
+}
+
+/**
+ * Stops an ad or edit that's being made (its Stop button): its image job and
+ * its run are cancelled and it's removed. Each ad runs on its own, so this is
+ * the way to stop one; a new chat message doesn't.
+ */
+export async function stopAdAction(campaignId: string, adId: string): Promise<ActionResult> {
+  await requireUser();
+  if (!id.safeParse(campaignId).success || !id.safeParse(adId).success) return { ok: false, error: "Unknown ad." };
+  return run(async () => void (await stopAd(campaignId, adId)), "Couldn't stop that ad.");
+}
+
 const fraction = z.number().min(0).max(1);
 
 /** Pins a comment to a spot on an ad (x/y as fractions of its width/height). */
 export async function addAdCommentAction(
   campaignId: string,
   adId: string,
-  comment: { x: number; y: number; body: string },
+  comment: { x: number; y: number; w?: number; h?: number; body: string },
 ): Promise<{ ok: true; comment: AdComment } | { ok: false; error: string }> {
   await requireUser();
+  const size = z.number().gt(0).max(1).optional();
   const parsed = z
-    .object({ campaignId: id, adId: id, x: fraction, y: fraction, body: z.string().trim().min(1).max(500) })
+    .object({ campaignId: id, adId: id, x: fraction, y: fraction, w: size, h: size, body: z.string().trim().min(1).max(500) })
+    .refine((c) => (c.w === undefined) === (c.h === undefined))
     .safeParse({ campaignId, adId, ...comment });
   if (!parsed.success) return { ok: false, error: "Comments need 1 to 500 characters." };
   try {

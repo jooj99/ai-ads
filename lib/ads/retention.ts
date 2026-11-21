@@ -37,13 +37,19 @@ export type EditCheck = {
 export async function checkEdit(
   before: Uint8Array,
   after: Uint8Array,
-  pins: { n: number; x: number; y: number }[],
+  pins: { n: number; x: number; y: number; w?: number | null; h?: number | null }[],
 ): Promise<EditCheck> {
   const grid = (img: Uint8Array) =>
     sharp(img).resize(W, H, { fit: "fill" }).blur(0.6).removeAlpha().raw().toBuffer();
   const [a, b] = await Promise.all([grid(before), grid(after)]);
-  // Distances in width units: a 9:16 image is 16/9 widths tall.
-  const dist = (x: number, y: number, p: { x: number; y: number }) => Math.hypot(x / W - p.x, ((y / H - p.y) * 16) / 9);
+  // Distances in width units: a 9:16 image is 16/9 widths tall. For a box
+  // comment, the distance is from the box (0 inside it), so "near the pin"
+  // means inside the box and "the rest of the ad" starts KEEP_RADIUS out.
+  const dist = (x: number, y: number, p: { x: number; y: number; w?: number | null; h?: number | null }) => {
+    const dx = Math.max(0, Math.abs(x / W - p.x) - (p.w ?? 0) / 2);
+    const dy = Math.max(0, Math.abs(y / H - p.y) - (p.h ?? 0) / 2);
+    return Math.hypot(dx, (dy * 16) / 9);
+  };
 
   let kept = 0;
   let outside = 0;

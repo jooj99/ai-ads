@@ -5,6 +5,7 @@ import type { LayoutLink } from "./html-signals";
 import { OFFERING_MODEL } from "./offering";
 import type { Offering } from "./types";
 import { GATEWAY_CACHING } from "@/lib/ai-caching";
+import { withStallRetry } from "@/lib/ai-retry";
 
 /**
  * Link picker: one small-model call sorts the site's own links into the pages
@@ -78,9 +79,11 @@ export async function classifyLinks({
     .map((c, i) => `${i + 1}. [${c.area}] ${c.text || "(no label)"} → ${pathOf(c.url)}`)
     .join("\n");
 
-  const { output } = await generateText({
+  const { output } = await withStallRetry("choosing pages to read", (abortSignal) => generateText({
     model: OFFERING_MODEL,
     providerOptions: GATEWAY_CACHING,
+    abortSignal,
+    maxRetries: 0,
     instructions: `You sort a website's links so an ad tool reads the pages that describe what the business sells.
 This business sells ${offering}. Judge each link by its label, its path and where it sits (nav, footer or page body).
 A software company's products are often named modules ("Records", "Dispatch", "Intelligence"); those are offerings.
@@ -93,7 +96,7 @@ Sales and promotions (Black Friday, Cyber Monday, holiday deals, "Sale", clearan
       guidance,
     ),
     output: Output.object({ schema: pickSchema }),
-  });
+  }));
 
   const picks: LinkPicks = { offerings: [], indexes: [], audience: [] };
   const used = new Set<string>();

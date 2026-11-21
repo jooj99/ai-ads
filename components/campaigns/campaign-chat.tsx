@@ -10,6 +10,7 @@ import {
   PackageSearchIcon,
   RotateCwIcon,
   SparklesIcon,
+  SquareIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
@@ -40,6 +41,7 @@ import { HeadlineChoice, type ChoiceSubmission } from "@/components/campaigns/he
 import { Button } from "@/components/ui/button";
 import { InputGroupAddon } from "@/components/ui/input-group";
 import { IdeaChoice } from "@/components/campaigns/idea-choice";
+import { stopAdAction } from "@/app/campaigns/actions";
 import { adPreviewUrl } from "@/lib/ads/preview-url";
 import { RESEARCH_TOOL_PARTS, type AdIdea, type AgentUIMessage } from "@/lib/agent/tools";
 import type { SavedAd, SavedHeadline } from "@/lib/campaigns";
@@ -264,6 +266,9 @@ export function CampaignChat({
                             live={current}
                             retry={isRetry(message.parts.slice(0, i), part)}
                             ads={ads}
+                            campaignId={campaignId}
+                            onSend={busy ? undefined : (text) => onSend(text)}
+                            latest={message === last}
                           />
                         );
                       case "tool-readSkill":
@@ -292,11 +297,22 @@ export function CampaignChat({
 
           {error && (
             <div className="flex flex-col items-start gap-2 rounded-xl border border-destructive/40 p-3 text-sm">
-              <p>{error.message || "The agent couldn't reply just now."}</p>
-              <Button size="sm" variant="outline" onClick={onRetry}>
-                <RotateCwIcon />
-                Try again
-              </Button>
+              {signedOut(error) ? (
+                <>
+                  <p>You&apos;ve been signed out, so the agent can&apos;t reply. Sign in again; your chat is saved.</p>
+                  <Button size="sm" variant="outline" asChild>
+                    <a href={`/login?next=${encodeURIComponent(`/campaigns/${campaignId}`)}`}>Sign in</a>
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <p>{readableError(error)}</p>
+                  <Button size="sm" variant="outline" onClick={onRetry}>
+                    <RotateCwIcon />
+                    Try again
+                  </Button>
+                </>
+              )}
             </div>
           )}
         </ConversationContent>
@@ -506,7 +522,29 @@ function isRetry(before: AgentUIMessage["parts"], part: AdPart): boolean {
   );
 }
 
-function AdRow({ part, live, retry, ads }: { part: AdPart; live: boolean; retry: boolean; ads: SavedAd[] }) {
+function AdRow({
+  part,
+  live,
+  retry,
+  ads,
+  campaignId,
+  onSend,
+  latest,
+}: {
+  part: AdPart;
+  live: boolean;
+  retry: boolean;
+  ads: SavedAd[];
+  campaignId: string;
+  /** Sends a chat message (Try again on a call that failed before its ad existed); unset while the agent replies. */
+  onSend?: (text: string) => void;
+  /** The call is in the newest message (its ad's row may still be on its way). */
+  latest: boolean;
+}) {
+  if (part.state === "output-error") return <AdCallFailed part={part} onSend={onSend} />;
+  if (part.state === "output-available" && part.output.started) {
+    return <AdJobRow part={part} ads={ads} campaignId={campaignId} recent={latest} />;
+  }
   if (part.state === "output-available") {
     const { ok, summary, ad } = part.output;
     return (
@@ -527,7 +565,7 @@ function AdRow({ part, live, retry, ads }: { part: AdPart; live: boolean; retry:
       </div>
     );
   }
-  if (!live || part.state === "output-error") return null; // interrupted before it finished
+  if (!live) return null; // interrupted before it finished
   const { title, stage } = adProgress(part, retry, ads);
   return (
     <div className="flex items-start gap-2 text-muted-foreground">
@@ -535,6 +573,170 @@ function AdRow({ part, live, retry, ads }: { part: AdPart; live: boolean; retry:
       <span className="flex min-w-0 flex-col gap-0.5">
         <span className="text-foreground/80">{title}</span>
         <Shimmer as="span" className="text-xs">{`${stage}…`}</Shimmer>
+      </span>
+    </div>
+  );
+}
+
+/**
+ * A generateAd/editAd call that failed before its ad existed (preparing it
+ * threw: a database or storage error): what went wrong, and Try again, which
+ * asks the agent for it once more.
+ */
+function AdCallFailed({ part, onSend }: { part: AdPart; onSend?: (text: string) => void }) {
+  const edit = part.type === "tool-editAd";
+  const headline = part.type === "tool-generateAd" ? part.input?.headline : undefined;
+  const what = edit ? "the edit" : headline ? `the ad for “${headline}”` : "the ad";
+  // The step's own error, without the workflow's wrapper ("FatalError: Step … failed after 3 retries: ").
+  const reason = ("errorText" in part && part.errorText ? String(part.errorText) : "")
+    .split("\n")[0]
+    .replace(/^.*failed after \d+ retries?: /, "")
+    .replace(/^(?:Fatal)?Error: /, "")
+    .slice(0, 200);
+  return (
+    <div className="flex items-start gap-3 text-muted-foreground">
+      <XIcon className="mt-0.5 size-4 shrink-0 text-destructive" />
+      <span className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <span>
+          Couldn&apos;t start {what}
+          {reason ? `: ${reason}` : "."}
+        </span>
+        {onSend && (
+          <Button
+            size="xs"
+            variant="outline"
+            className="self-start"
+            onClick={() => onSend(edit ? "Try that edit again." : `Try ${what} again.`)}
+          >
+            <RotateCwIcon />
+            Try again
+          </Button>
+        )}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * An ad or edit the agent started, made by its own run after the reply:
+ * follows its row live (by the call's id). While it's being made: its stage
+ * and a Stop button. Then the thumbnail with how it came out (fixed, still
+ * not right, not checked, or what an edit changed), or why it failed.
+ */
+function AdJobRow({
+  part,
+  ads,
+  campaignId,
+  recent,
+}: {
+  part: AdPart;
+  ads: SavedAd[];
+  campaignId: string;
+  /** The call is in the current reply: its row may still be on its way. */
+  recent: boolean;
+}) {
+  const [stopping, setStopping] = useState<"stopping" | "stopped" | "failed">();
+  const row = ads.find((a) => a.toolCallId === part.toolCallId);
+  const edit = part.type === "tool-editAd";
+  const versions = row ? ads.filter((a) => a.number === row.number && a.status === "ready") : [];
+  const version = row ? [...versions].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).findIndex((a) => a.id === row.id) + 1 : 0;
+  const name = row ? (edit ? `v${version || versions.length + 1} of Ad ${row.number}` : `Ad ${row.number}`) : edit ? "the edit" : "the ad";
+
+  if (!row || stopping === "stopped") {
+    // An earlier call whose ad no longer exists (stopped or deleted) says so
+    // instead of spinning; only a call in the current reply waits for its row.
+    if (!row && !stopping && !recent) {
+      return (
+        <p className="flex items-center gap-2 text-muted-foreground">
+          <XIcon className="size-4 shrink-0" />
+          This {edit ? "edit" : "ad"} was stopped or deleted.
+        </p>
+      );
+    }
+    return stopping === "stopped" || stopping === "stopping" ? (
+      <p className="flex items-center gap-2 text-muted-foreground">
+        <XIcon className="size-4 shrink-0" />
+        Stopped {edit ? "the edit" : "making the ad"}.
+      </p>
+    ) : (
+      // The row shows up a moment after the call returns.
+      <div className="flex items-center gap-2 text-muted-foreground">
+        <Loader2Icon className="size-4 shrink-0 animate-spin" />
+        <Shimmer as="span">{edit ? "Starting the edit…" : "Starting the ad…"}</Shimmer>
+      </div>
+    );
+  }
+
+  if (row.status === "generating") {
+    async function stopIt() {
+      setStopping("stopping");
+      const result = await stopAdAction(campaignId, row!.id);
+      setStopping(result.ok ? "stopped" : "failed");
+    }
+    return (
+      <div className="flex items-start gap-2 text-muted-foreground">
+        <Loader2Icon className="mt-0.5 size-4 shrink-0 animate-spin" />
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="text-foreground/80">
+            {edit ? `Making ${name}` : `Making ${name}: “${row.headline}”`}
+          </span>
+          <Shimmer as="span" className="text-xs">{`${row.stage ?? "Getting ready"}…`}</Shimmer>
+          {stopping === "failed" && <span className="text-xs text-destructive">Couldn&apos;t stop it. Try again.</span>}
+        </span>
+        <Button
+          size="xs"
+          variant="ghost"
+          className="shrink-0"
+          disabled={stopping === "stopping"}
+          onClick={stopIt}
+        >
+          {stopping === "stopping" ? <Loader2Icon className="animate-spin" /> : <SquareIcon className="fill-current" />}
+          Stop
+        </Button>
+      </div>
+    );
+  }
+
+  if (row.status === "failed" || !row.imageUrl) {
+    return (
+      <p className="flex items-start gap-3 text-muted-foreground">
+        <XIcon className="mt-0.5 size-4 shrink-0 text-destructive" />
+        <span>
+          {edit ? `Couldn't edit Ad ${row.number}` : `Couldn't make ${name}`}: {row.error ?? "it didn't finish"}
+          {" "}Try again from the Ads tab.
+        </span>
+      </p>
+    );
+  }
+
+  const notes = [
+    edit && row.changes?.length ? row.changes.join("; ") : "",
+    row.issues.length ? `Still not right after the automatic fixes: ${row.issues.join("; ")}` : "",
+    !row.issues.length && row.fixRounds > 0 && !edit ? "Fixed automatically before showing." : "",
+  ].filter(Boolean);
+  return (
+    <div className="flex items-start gap-3 text-muted-foreground">
+      <a href={row.imageUrl} target="_blank" rel="noreferrer" className="shrink-0" title="Open full size">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={adPreviewUrl(row.imageUrl)}
+          alt={`Ad: ${row.headline}`}
+          className="aspect-[9/16] w-16 rounded-md object-cover ring-1 ring-foreground/10"
+        />
+      </a>
+      <span className="flex min-w-0 flex-col gap-1 pt-0.5">
+        <span className="text-foreground/80">
+          {edit ? `Made ${name}.` : `Made ${name}: “${row.headline}”.`}
+        </span>
+        {notes.map((note) => (
+          <span key={note} className="text-xs">{note}</span>
+        ))}
+        {row.unchecked && (
+          <span className="flex items-start gap-1.5 text-xs text-brand-orange">
+            <AlertTriangleIcon className="mt-px size-3.5 shrink-0" />
+            Not checked: the automatic check didn&apos;t respond, so look over the logo and products yourself.
+          </span>
+        )}
       </span>
     </div>
   );
@@ -566,4 +768,24 @@ function adProgress(part: AdPart, retry: boolean, ads: SavedAd[]): { title: stri
     title: `${again ? `Trying ${which} again` : `Making ${which}`}${headline ? `: “${headline}”` : ""}`,
     stage: done ?? row?.stage ?? "Writing the brief",
   };
+}
+
+/** The chat request was refused because the session ended ("Failed to fetch chat: 401 …"). */
+function signedOut(error: Error): boolean {
+  return /\b401\b/.test(error.message);
+}
+
+/**
+ * A chat error in words: a server's JSON reply ("Failed to fetch chat: 500
+ * {"error":"…"}") becomes just its message.
+ */
+function readableError(error: Error): string {
+  const json = error.message.match(/\{[\s\S]*\}$/)?.[0];
+  if (json) {
+    try {
+      const parsed = JSON.parse(json) as { error?: unknown };
+      if (typeof parsed.error === "string" && parsed.error) return parsed.error;
+    } catch {}
+  }
+  return error.message || "The agent couldn't reply just now.";
 }

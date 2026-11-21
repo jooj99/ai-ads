@@ -226,6 +226,8 @@ const adResult = z.object({
   ad: z.object({ id: z.string(), url: z.string(), headline: z.string(), cta: z.string() }).optional(),
   /** For edits: what visibly changed, from comparing the ad before and after. */
   changes: z.array(z.string()).optional(),
+  /** The ad or edit was prepared and is being made by its own run; its row (by tool call) has the outcome. */
+  started: z.boolean().optional(),
 });
 
 /** Images the user attached in chat, to use in an ad (by their ref), each with how to use it. */
@@ -245,7 +247,7 @@ const references = z
 
 export const generateAdSpec = tool({
   description:
-    "Generate one full-screen 9:16 portrait image ad for a saved headline and CTA (usually a picked idea's), built on real product photos with Nano Banana Pro, following the idea's creative direction when given. It takes about a minute. The brand's colors, fonts and voice are applied automatically. Call it once per idea; several calls in the same step run in parallel.",
+    "Generate one full-screen 9:16 portrait image ad for a saved headline and CTA (usually a picked idea's), built on real product photos with Nano Banana Pro, following the idea's creative direction when given. The brand's colors, fonts and voice are applied automatically. It returns as soon as the ad is prepared (\"Started Ad N\"); the image is then made on its own in about a minute, and the chat and Ads tab show it when ready. ok: false means it wasn't started (fix what the summary says). Call it once per idea; several calls in the same step start in parallel.",
   inputSchema: z.object({
     headline: z.string().min(1).max(80).describe("A saved headline, exactly as saved."),
     cta: z.string().min(1).max(30).describe("Its CTA, exactly as saved."),
@@ -279,7 +281,7 @@ export const deleteAdSpec = tool({
 
 export const editAdSpec = tool({
   description:
-    "Make a new version of an existing ad from feedback: the comments the user pinned on it (applied automatically) and/or an instruction you write from what they said in chat. Keeps the headline, CTA and products. Takes about a minute; the original stays as the earlier version.",
+    "Make a new version of an existing ad from feedback: the comments the user pinned on it (applied automatically) and/or an instruction you write from what they said in chat. Keeps the headline, CTA and products; the original stays as the earlier version. It returns as soon as the edit is prepared (\"Started the edit of Ad N\"); the new version is made on its own in about a minute, and the chat and Ads tab show it with what changed. ok: false means it wasn't started.",
   inputSchema: z.object({
     adId: z.string().describe("The id of the ad version to edit (from the ads list in your instructions)."),
     instruction: z

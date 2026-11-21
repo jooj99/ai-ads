@@ -46,6 +46,26 @@ export type CatalogItem = Product & {
   isHero?: boolean;
   /** Who added it: research, or the agent or user on request. */
   origin?: "research" | "agent" | "user";
+  /** How it works, read from its photos and description (lib/research/product-notes.ts); written when first needed. */
+  notes?: ProductNotes;
+};
+
+/**
+ * Facts about a product, read once from its own photos and description by a
+ * vision model, so ads stage it and the check judges it the way it really
+ * works. Brand-neutral: describes only what the photos show.
+ */
+export type ProductNotes = {
+  /** What it is, in a sentence. */
+  what: string;
+  /** Its visible parts: what each looks like, where it sits and how it attaches. */
+  parts: string[];
+  /** How it's held, worn, attached or used, as the photos show it. */
+  use: string;
+  /** Things it doesn't have or doesn't do that an image model might invent. */
+  never: string[];
+  /** The photo the notes were read from first, so changed photos mean new notes. */
+  from?: string;
 };
 
 export type BrandColor = { hex: string; role: string };

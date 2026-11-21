@@ -19,6 +19,7 @@ import {
   addAdCommentAction,
   deleteAdAction,
   deleteAdCommentAction,
+  dismissAdIssueAction,
   updateAdCommentAction,
   reviewAdCommentAction,
   listAdsAction,
@@ -27,7 +28,7 @@ import {
   saveHeadlineAction,
   updateKitStyleAction,
 } from "@/app/campaigns/actions";
-import { AdStudio, type PendingAd } from "@/components/campaigns/ad-studio";
+import { AdStudio, type NewComment, type PendingAd } from "@/components/campaigns/ad-studio";
 import { CampaignChat, type HeadlineControls } from "@/components/campaigns/campaign-chat";
 import { CampaignTitle } from "@/components/campaigns/campaign-title";
 import { DeleteCampaignDialog } from "@/components/campaigns/delete-campaign-button";
@@ -462,7 +463,7 @@ export function CampaignWorkspace({
   }
 
   /** Pins a comment on an ad; it shows once saved. */
-  async function addComment(ad: SavedAd, comment: { x: number; y: number; body: string }) {
+  async function addComment(ad: SavedAd, comment: NewComment) {
     setAdError(undefined);
     const result = await addAdCommentAction(campaign.id, ad.id, comment);
     if (!result.ok) {
@@ -480,6 +481,30 @@ export function CampaignWorkspace({
     );
     // Deleted in the background; if that fails, the comment comes back.
     void deleteAdCommentAction(campaign.id, comment.id).then((result) => {
+      if (!result.ok) {
+        setAdError(result.error);
+        void syncAds();
+      }
+    });
+  }
+
+  /**
+   * Dismisses one warning on an ad version (a remaining problem, or the
+   * not-checked note as "unchecked"): it goes at once, is saved in the
+   * background, and comes back if that fails.
+   */
+  function dismissIssue(ad: SavedAd, issue: string) {
+    setAdError(undefined);
+    setAds((list) =>
+      list.map((a) =>
+        a.id !== ad.id
+          ? a
+          : issue === "unchecked"
+            ? { ...a, unchecked: null }
+            : { ...a, issues: a.issues.filter((i) => i !== issue) },
+      ),
+    );
+    void dismissAdIssueAction(campaign.id, ad.id, issue).then((result) => {
       if (!result.ok) {
         setAdError(result.error);
         void syncAds();
@@ -891,6 +916,8 @@ export function CampaignWorkspace({
                 onDeleteAd={deleteAd}
                 onAddComment={addComment}
                 onDeleteComment={(ad, c) => void deleteComment(ad, c)}
+                onDismissIssue={dismissIssue}
+                onStart={researchDone ? () => void send(kickoffText(campaign.domain)) : undefined}
                 onEditComment={editComment}
                 onReview={reviewComment}
                 onApply={(ad, count) =>
@@ -968,6 +995,8 @@ function AdsPanel({
   onDeleteAd,
   onAddComment,
   onDeleteComment,
+  onDismissIssue,
+  onStart,
   onEditComment,
   onApply,
   onReview,
@@ -980,8 +1009,10 @@ function AdsPanel({
   products: CatalogItem[];
   adError?: string;
   onDeleteAd: (ad: SavedAd, scope: "version" | "ad") => void;
-  onAddComment: (ad: SavedAd, comment: { x: number; y: number; body: string }) => Promise<boolean>;
+  onAddComment: (ad: SavedAd, comment: NewComment) => Promise<boolean>;
   onDeleteComment: (ad: SavedAd, comment: AdComment) => void;
+  onDismissIssue: (ad: SavedAd, issue: string) => void;
+  onStart?: () => void;
   onEditComment: (ad: SavedAd, comment: AdComment, body: string) => Promise<boolean>;
   onApply: (ad: SavedAd, count: number) => void;
   onReview: (comment: AdComment, resolved: boolean) => Promise<void>;
@@ -999,6 +1030,8 @@ function AdsPanel({
         onDelete={onDeleteAd}
         onAddComment={onAddComment}
         onDeleteComment={onDeleteComment}
+        onDismissIssue={onDismissIssue}
+        onStart={onStart}
         onEditComment={onEditComment}
         onApply={onApply}
         onReview={onReview}
@@ -1073,10 +1106,10 @@ function HeadlinesCard({
         ) : (
           <p className="text-sm text-muted-foreground">
             {waiting
-              ? "Tick the headlines you like in the chat, as many as you want."
+              ? "Pick the ideas you like on the card in the chat: their headlines are saved here."
               : researchDone
-                ? "Ask the agent for headline options in the chat, or write your own."
-                : "Once research finishes, the agent suggests headlines in the chat."}
+                ? "The headlines of the ideas you pick are saved here. Ask the agent for ad ideas in the chat, or write your own."
+                : "Once research finishes, the agent pitches ad ideas in the chat; the headlines you pick are saved here."}
           </p>
         )}
         {writing && <WriteOwnForm onSubmit={onWrite} onCancel={() => setWriting(false)} />}

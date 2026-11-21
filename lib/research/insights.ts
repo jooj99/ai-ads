@@ -120,6 +120,9 @@ type InsightsInput = {
   guidance?: string;
 };
 
+/** Time limits on the streamed writers: the first output within a minute, then no 45 seconds of silence. */
+const STREAM_TIMEOUT = { firstChunkMs: 60_000, chunkMs: 45_000 };
+
 /**
  * Streams the brand insights: name, tagline, value proposition, audience and
  * voice. The caller reads `partialOutputStream`, then `output`.
@@ -134,6 +137,9 @@ This business sells ${input.offering}. Read its homepage, navbar, footer and a s
 Ground every claim in the provided content; when you infer (audience, voice), infer from the copy, ${n.items} and prices.`,
     prompt: promptFor(input, { contentChars: MAX_CONTENT_CHARS, catalogChars: BRAND_CATALOG_CHARS }),
     output: Output.object({ schema: brandInsightsSchema }),
+    // A stalled stream fails (and the research step reports it) instead of
+    // hanging until the function is killed.
+    timeout: STREAM_TIMEOUT,
     // Stream errors don't throw; without this the cause (e.g. a Gateway
     // billing or rate-limit error) is lost behind NoOutputGeneratedError.
     onError: ({ error }) => console.error("[research] brand insights stream error", error),
@@ -156,6 +162,9 @@ Use the navbar and footer as the brand's own category list.
 Never invent ${n.items}: ids must come from the catalog exactly.`,
     prompt: promptFor(input, { contentChars: 5_000, catalogChars: MAX_CATALOG_CHARS }),
     output: Output.object({ schema: catalogGroupingSchema }),
+    // A stalled stream fails (and the research step reports it) instead of
+    // hanging until the function is killed.
+    timeout: STREAM_TIMEOUT,
     onError: ({ error }) => console.error("[research] catalog grouping stream error", error),
   });
 }

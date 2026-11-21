@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import type { PageResearch } from "./page";
 import { GATEWAY_CACHING } from "@/lib/ai-caching";
+import { withStallRetry } from "@/lib/ai-retry";
 
 /** Small, fast model for one classification; override with OFFERING_MODEL. */
 export const OFFERING_MODEL = process.env.OFFERING_MODEL ?? "anthropic/claude-haiku-5.5";
@@ -47,13 +48,15 @@ export async function classifyOffering({
     .filter((line): line is string => typeof line === "string")
     .join("\n\n");
 
-  const { output } = await generateText({
+  const { output } = await withStallRetry("classifying the business", (abortSignal) => generateText({
     model: OFFERING_MODEL,
     providerOptions: GATEWAY_CACHING,
+    abortSignal,
+    maxRetries: 0,
     instructions:
       "Classify what this business sells so an ad tool knows whether to feature products or services. When it sells both, choose what the homepage leads with.",
     prompt,
     output: Output.object({ schema: offeringSchema }),
-  });
+  }));
   return output;
 }

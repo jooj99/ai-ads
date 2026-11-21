@@ -4,7 +4,7 @@ import sharp from "sharp";
 
 import { broadcastAdActivity } from "@/lib/ads/activity";
 import { brandGraphics, logoImage, swatchImages } from "@/lib/ads/brand-assets";
-import { adLink, buildAdBrief, ideaVisual, showsProduct, usesGraphics, withoutEmoji } from "@/lib/ads/brief";
+import { adLink, buildAdBrief, ideaVisual, showsProduct, usesGraphics, withoutEmoji, type AdBrief } from "@/lib/ads/brief";
 import { MAX_REPAIRS, runAdFlow, type AdCheck, type AdVerification } from "@/lib/ads/flow";
 import {
   AdExpiredError,
@@ -23,9 +23,10 @@ import {
 } from "@/lib/ads/render";
 import { setAdStage } from "@/lib/ads/stage";
 import { AD_BUCKET, adImageUrl } from "@/lib/ads/store";
-import { describeIssues, fixAd, verifyAd, type AdIssue } from "@/lib/ads/verify";
+import { describeIssues, findArtifacts, fixAd, MAX_FIXES_PER_EDIT, verifyAd, type AdIssue } from "@/lib/ads/verify";
 import { WEBP, workWebp } from "@/lib/ads/webp";
 import { getCampaignResearch } from "@/lib/campaigns";
+import { ensureProductNotes, notesText, storeContext } from "@/lib/research/product-notes";
 import { supabase } from "@/lib/supabase/server";
 import { resolveReferences, type AdReference } from "@/lib/uploads";
 import type { IdeaDirection } from "@/lib/agent/tools";
@@ -41,7 +42,8 @@ import type { IdeaDirection } from "@/lib/agent/tools";
  *    renders a draft;
  * 2. `checkDraft`: a vision model checks the draft against the real products
  *    and logo (lib/ads/verify.ts);
- * 3. `repairDraft`: one boxed edit per problem, chained, in up to MAX_REPAIRS rounds (one)
+ * 3. `repairDraft`: one edit per round fixing every problem found, each in a
+ *    numbered box (like a comment edit), in up to MAX_REPAIRS rounds (two)
  *    while problems remain;
  * 4. `finishAd`: stores the best version. Problems still there are saved
  *    and shown beside the ad.
@@ -89,6 +91,8 @@ export type AdJob = {
   graphics?: boolean;
   /** The kit's logo URL, when it has one: the check compares the ad's logo with it. */
   logo?: string;
+  /** Each product's notes as a line (how it works): the check and repairs judge the product against them. */
+  productNotes?: string[];
   /** The store's domain shown on the ad; the check and repairs keep it exact. */
   link?: string;
 };
@@ -110,11 +114,35 @@ const label = (headline: string) => `“${headline}”`;
 const workPath = (job: AdJob, round: number, edit?: number) =>
   `${job.campaignId}/work-${job.adId}-${round}${edit ? `-${edit}` : ""}.webp`;
 
+/**
+ * A new ad, prepared and recorded but not drawn yet: what its own run needs
+ * to draft it. Plain JSON (it's handed to the ad's workflow run).
+ */
+export type AdDraftJob = { job: AdJob; brief: AdBrief };
+
+/** Prepares the ad, then drafts it (the in-process flow; the agent splits the two across runs). */
 export async function startAd(
   campaignId: string,
   copy: GenerateAdInput,
-  { toolCallId, runId }: Ctx = {},
+  ctx: Ctx = {},
 ): Promise<{ result: AdToolResult } | { job: AdJob; draftPath: string }> {
+  const prepared = await prepareAd(campaignId, copy, ctx);
+  return "result" in prepared ? prepared : draftAd(prepared);
+}
+
+/**
+ * Everything before the first image, in a few seconds: checks the request
+ * (products in the catalog, attached images that exist), builds the brief and
+ * records the ad as "generating", so it shows as "Ad N" straight away. A
+ * mistake comes back as `{ result }` for the agent to fix, before anything is
+ * paid for. `runId` is the agent run asking: if it was stopped meanwhile, the
+ * ad isn't recorded. The row gets the run that makes the ad later (draftAd).
+ */
+export async function prepareAd(
+  campaignId: string,
+  copy: GenerateAdInput,
+  { toolCallId, runId }: Ctx = {},
+): Promise<{ result: AdToolResult } | AdDraftJob> {
   // A retry starts from what the failed ad was made with.
   const failed = copy.retryOf ? await failedAd(campaignId, copy.retryOf) : null;
   if (copy.retryOf && !failed) {
@@ -157,6 +185,9 @@ export async function startAd(
       ? await chooseProducts(kit, input.productIds ?? [])
       : (input.productIds ?? []).flatMap((id) => all.filter((p) => p.id === id).slice(0, 1));
   if (!products.length) return fail("none of the chosen products has a photo that loads.");
+  // How each product works (written once, then saved): the brief stages it
+  // that way and the check judges it against it.
+  const noted = await ensureProductNotes(campaignId, products, storeContext(kit)).catch(() => products);
   const refs = await resolveReferences(campaignId, input.references);
   if (refs.missing.length) return fail(`no attached image called ${refs.missing.map((m) => `"${m}"`).join(", ")}.`);
 
@@ -171,7 +202,7 @@ export async function startAd(
     kit,
     headline: input.headline,
     cta: input.cta,
-    products,
+    products: noted,
     logoUrl: logo?.url,
     swatches,
     references: refs.found,
@@ -199,9 +230,13 @@ export async function startAd(
       system_prompt: brief.systemPrompt,
       image_inputs: recorded,
       tool_call_id: toolCallId ?? null,
-      run_id: runId ?? null,
+      run_id: null,
       idea: input.idea ?? null,
     }));
+    if (runId && (await runStopped(campaignId, runId))) {
+      await supabase().from("campaign_ads").delete().eq("id", adId);
+      throw new AdStoppedError();
+    }
   } catch (error) {
     if (error instanceof AdStoppedError) {
       return { result: { ok: false, summary: `Stopped making the ad for ${label(input.headline)}.` } };
@@ -221,15 +256,31 @@ export async function startAd(
     // Every product photo the brief sent (up to 2 per product), so a design
     // shown only in a second photo isn't mistaken for a fake.
     productUrls: products.flatMap((p) => p.images.slice(0, 2)).slice(0, 6),
+    productNotes: noted.flatMap((p) => notesText(p) ?? []),
     services: kit.offering === "services",
     showProduct: showsProduct(visual),
     graphics: usesGraphics(visual) && graphics.length > 0,
     ...(logo && { logo: kit.logo }),
     ...(adLink(kit) && { link: adLink(kit) }),
   };
+  return { job, brief };
+}
+
+/**
+ * The first image of a prepared ad. `runId` is the run making the ad: it's
+ * recorded on the row, so the stale-ad sweep can tell when that run is gone.
+ */
+export async function draftAd(
+  { job, brief }: AdDraftJob,
+  runId?: string,
+): Promise<{ result: AdToolResult } | { job: AdJob; draftPath: string }> {
   try {
-    await setAdStage(campaignId, adId, "Drafting the image");
-    const draft = await falImage(brief, adId);
+    if (runId) {
+      await supabase().from("campaign_ads").update({ run_id: runId }).eq("id", job.adId).eq("status", "generating");
+    }
+    await throwIfStopped(job.adId); // stopped before it started: don't pay for the draft
+    await setAdStage(job.campaignId, job.adId, "Drafting the image");
+    const draft = await falImage(brief, job.adId);
     const path = workPath(job, 0);
     const saved = await uploadWithRetry(path, await workWebp(draft.bytes), WEBP);
     if (saved.error) throw new Error(`storing the image failed: ${saved.error.message}`);
@@ -252,7 +303,7 @@ export async function checkDraft(job: AdJob, path: string): Promise<AdCheck> {
       : "Checking the fixes",
   );
   const logo = job.logo ? await logoImage(job.campaignId, job.logo) : null;
-  return verifyAd({
+  const check = verifyAd({
     image,
     logoUrl: logo?.url,
     productUrls: job.productUrls,
@@ -262,46 +313,55 @@ export async function checkDraft(job: AdJob, path: string): Promise<AdCheck> {
     headline: job.headline,
     cta: job.cta,
     link: job.link,
+    productNotes: job.productNotes,
   });
+  if (first) return check;
+  // A repair was drawn from a copy with numbered boxes on it: a second,
+  // narrower look for copied boxes, pins or numbers, so a version with one
+  // is never kept (the flow scores a leftover mark as worse than anything).
+  const [result, marks] = await Promise.all([check, findArtifacts(image)]);
+  const known = result.issues.filter((i) => i.kind === "artifact").length;
+  return marks.length > known ? { ...result, issues: [...result.issues.filter((i) => i.kind !== "artifact"), ...marks] } : result;
 }
 
-/** One edit for one problem: the edited copy's path, `{}` if it failed, or a result if stopped. */
+/** One edit fixing these problems (each in a numbered box): the edited copy's path, `{}` if it failed, or a result if stopped. */
 export async function repairDraft(
   job: AdJob,
   path: string,
-  issue: AdIssue,
+  issues: AdIssue[],
   round: number,
-  edit: number,
 ): Promise<{ path?: string; result?: AdToolResult }> {
   try {
     await throwIfStopped(job.adId); // don't pay for a repair the user stopped
     const image = await readWork(path);
     if (!image) return {};
-    console.warn(`[ads] Ad ${job.number}: repair ${round}.${edit} for ${issue.kind} at ${issue.where}`);
+    const fixing = issues.slice(0, MAX_FIXES_PER_EDIT);
+    console.warn(`[ads] Ad ${job.number}: repair round ${round} for ${fixing.map((i) => `${i.kind} at ${i.where}`).join("; ")}`);
     await setAdStage(
       job.campaignId,
       job.adId,
-      `Fixing ${repairTarget(issue)}${MAX_REPAIRS > 1 ? ` (round ${round} of ${MAX_REPAIRS})` : ""}`,
+      `Fixing ${fixing.length === 1 ? repairTarget(fixing[0]) : `${fixing.length} problems`} (round ${round} of ${MAX_REPAIRS})`,
     );
-    const logo = issue.kind === "logo" && job.logo ? await logoImage(job.campaignId, job.logo) : null;
+    const logo = fixing.some((i) => i.kind === "logo") && job.logo ? await logoImage(job.campaignId, job.logo) : null;
     const repaired = await fixAd({
       campaignId: job.campaignId,
       adId: job.adId,
       draft: { bytes: image, width: null, height: null, requestId: "" },
-      issue,
+      issues: fixing,
       productUrls: job.productUrls,
       logoUrl: logo?.url,
       headline: job.headline,
       cta: job.cta,
       link: job.link,
+      productNotes: job.productNotes,
     });
-    const out = workPath(job, round, edit);
+    const out = workPath(job, round);
     const saved = await uploadWithRetry(out, await workWebp(repaired.bytes), WEBP);
     return saved.error ? {} : { path: out };
   } catch (error) {
     if (error instanceof AdStoppedError) return { result: stopped(job) };
     if (error instanceof AdExpiredError) return { result: await failAd(job, error) };
-    console.error(`[ads] repair ${round}.${edit} failed`, error);
+    console.error(`[ads] repair round ${round} failed`, error);
     return {};
   }
 }
@@ -324,7 +384,9 @@ export async function finishAd(job: AdJob, path: string, verification: AdVerific
     const withRefs = job.references ? ` and ${job.references === 1 ? "your image" : `your ${job.references} images`}` : "";
     const { first, remaining, rounds } = verification;
     const check = !verification.checked
-      ? ""
+      ? verification.stalled
+        ? " Not checked: the automatic check didn't respond, so check the logo and products yourself."
+        : ""
       : !first.length
         ? " Checked: the logo and products match the real ones."
         : !remaining.length

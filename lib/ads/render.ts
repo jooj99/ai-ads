@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createFalClient } from "@fal-ai/client";
+import { getRun } from "workflow/api";
 
 import { broadcastAdActivity } from "@/lib/ads/activity";
 import { AD_BUCKET, previewPath } from "@/lib/ads/store";
@@ -271,11 +272,11 @@ export async function uploadWithRetry(path: string, bytes: Uint8Array, contentTy
 }
 
 /**
- * Whether the run making this ad was stopped: its row was removed by the
- * stop route, or its run is no longer the campaign's active run (stopped
- * and replaced, or ended). A normal run is still active while its tools run.
- * An ad given up on meanwhile (`expireStaleAds`) throws `AdExpiredError`
- * with its reason instead.
+ * Whether this ad was stopped: its row was removed (the Stop button, or the
+ * stop route for an older ad made inside an agent run), or the campaign's
+ * stopped run is the one making it. Each ad runs on its own now, so a new chat
+ * turn doesn't stop it. An ad given up on meanwhile (`expireStaleAds`) throws
+ * `AdExpiredError` with its reason instead.
  */
 export async function throwIfStopped(adId: string): Promise<void> {
   const db = supabase();
@@ -287,12 +288,8 @@ export async function throwIfStopped(adId: string): Promise<void> {
   if (row?.status === "failed") throw new AdExpiredError(row.error ?? "it was stopped");
   if (!row || row.status !== "generating") throw new AdStoppedError();
   if (!row.run_id) return;
-  const { data: campaign } = await db
-    .from("campaigns")
-    .select("agent_run_id, stopped_run_id")
-    .eq("id", row.campaign_id)
-    .maybeSingle();
-  if (campaign?.agent_run_id !== row.run_id || campaign?.stopped_run_id === row.run_id) {
+  const { data: campaign } = await db.from("campaigns").select("stopped_run_id").eq("id", row.campaign_id).maybeSingle();
+  if (campaign?.stopped_run_id === row.run_id) {
     await db.from("campaign_ads").delete().eq("id", adId);
     throw new AdStoppedError();
   }
@@ -324,6 +321,46 @@ export async function cancelRunAds(campaignId: string, runId: string): Promise<n
   await db.from("campaign_ads").delete().in("id", rows.map((r) => r.id));
   await broadcastAdActivity(campaignId);
   return rows.length;
+}
+
+/**
+ * Stops one ad (or edit) being made, from its Stop button: cancels its fal
+ * job and its own workflow run, removes its row and its working files.
+ * Whatever the job returns later is thrown away. False when it wasn't being
+ * made (already finished or gone).
+ */
+export async function cancelAd(campaignId: string, adId: string): Promise<boolean> {
+  const db = supabase();
+  const { data: row } = await db
+    .from("campaign_ads")
+    .select("id, run_id, fal_request_id, tool_call_id")
+    .eq("campaign_id", campaignId)
+    .eq("id", adId)
+    .eq("status", "generating")
+    .maybeSingle();
+  if (!row) return false;
+  await db.from("campaign_ads").delete().eq("id", adId).eq("status", "generating");
+  const credentials = falCredentials();
+  await Promise.all([
+    credentials && row.fal_request_id
+      ? createFalClient({ credentials }).queue.cancel(AD_MODEL, { requestId: row.fal_request_id }).catch(() => undefined)
+      : undefined,
+    row.run_id ? getRun(row.run_id).cancel().catch(() => undefined) : undefined,
+    removeAdWorkFiles(campaignId, adId, row.tool_call_id),
+  ]);
+  await broadcastAdActivity(campaignId);
+  return true;
+}
+
+/** An ad's drafts and repairs (`work-<ad>-…`) and an edit's temporary copies (`edit-` / `marks-<call>`). Never throws. */
+async function removeAdWorkFiles(campaignId: string, adId: string, toolCallId: string | null) {
+  try {
+    const bucket = supabase().storage.from(AD_BUCKET);
+    const { data } = await bucket.list(campaignId, { search: `work-${adId}-`, limit: 100 });
+    const names = (data ?? []).map((f) => `${campaignId}/${f.name}`);
+    if (toolCallId) names.push(`${campaignId}/edit-${toolCallId}.webp`, `${campaignId}/marks-${toolCallId}.webp`);
+    if (names.length) await bucket.remove(names);
+  } catch {}
 }
 
 /** Marks an ad row failed with the reason. */

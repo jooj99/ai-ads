@@ -8,6 +8,7 @@ import { fetchHtml, imagesFromHtml } from "./html-signals";
 import type { BrandVisual, CatalogItem } from "./types";
 import { absoluteUrl, isPublicHttpUrl } from "./url";
 import { GATEWAY_CACHING } from "@/lib/ai-caching";
+import { withStallRetry } from "@/lib/ai-retry";
 
 /**
  * The brand's own graphics: 3D shapes, a mascot, illustrations, patterns,
@@ -151,9 +152,11 @@ export async function classifyVisuals(brand: string, candidates: VisualCandidate
   ).filter((x) => x !== null);
   if (!loaded.length) return [];
   try {
-    const { output } = await generateText({
+    const { output } = await withStallRetry("sorting the site's images", (abortSignal) => generateText({
       model: VISUALS_MODEL,
       providerOptions: GATEWAY_CACHING,
+      abortSignal,
+      maxRetries: 0,
       instructions: `You sort images from ${brand}'s website for an ad team. Decide what each one is, using the picture and its context (where it was found, its file name). Be strict about brand graphics: only ${brand}'s own art (3D shapes, a mascot, illustrations, patterns), never another company's logo, a product photo, a person or a screenshot. Product and feature pages often show customers' and partners' logos ("trusted by", testimonials): a mark named after another company, or one that looks like a standalone logo, is other_company_logo even when it's stylized or 3D.`,
       messages: [
         {
@@ -171,7 +174,7 @@ export async function classifyVisuals(brand: string, candidates: VisualCandidate
         },
       ],
       output: Output.object({ schema }),
-    });
+    }));
     return output.images
       .filter((i) => i.kind === "brand_graphic" && loaded[i.index - 1])
       .sort((a, b) => b.strength - a.strength)

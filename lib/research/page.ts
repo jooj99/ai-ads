@@ -1,5 +1,6 @@
 import Firecrawl, { type BrandingProfile } from "@mendable/firecrawl-js";
 
+import { noteFirecrawlError } from "@/lib/research/firecrawl-errors";
 import {
   cleanFontFamily,
   collectHtmlSignals,
@@ -261,9 +262,15 @@ export async function withRateLimitRetry<T>(call: () => Promise<T>): Promise<T> 
   } catch (error) {
     const err = error as { status?: number; details?: { retry_after_seconds?: number } };
     const wait = err.details?.retry_after_seconds;
-    if (err.status !== 429 || wait === undefined || wait > 10) throw error;
+    if (err.status !== 429 || wait === undefined || wait > 10) {
+      noteFirecrawlError(error); // out of credits or rate limited: the step's summary says so
+      throw error;
+    }
     await new Promise((resolve) => setTimeout(resolve, (wait + 1) * 1000));
-    return call();
+    return call().catch((retryError: unknown) => {
+      noteFirecrawlError(retryError);
+      throw retryError;
+    });
   }
 }
 

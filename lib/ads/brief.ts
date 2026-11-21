@@ -63,8 +63,9 @@ Rules for every ad:
 /** How the product appears: shown exactly (with free staging), or not at all (its images are only a style reference). */
 const PRODUCT_RULES = {
   shown: `- The attached product photos show the brand's real products. Feature those exact products: keep their shape, colors, materials, prints and any logos on them, and every part where it is and as it attaches (a loop, strap, grip, handle or button stays in the same place and form). Never invent a product, change its design, or add products that aren't in the photos.
-- Staging is free: any setting, person, pose, angle, props, light and mood the concept calls for. The product is held, worn, placed or used the way its photos show it working, with only the parts it really has, as they are. Be bold and specific: a real moment, not a catalog shot, unless the concept asks for one.`,
-  product_graphic: `- The attached product photos show the brand's real products. Feature those exact products: keep their shape, colors, materials, prints and any logos on them, and every part where it is and as it attaches. Never invent a product, change its design, or add products that aren't in the photos.
+- Each hero product's how_it_works says what it is, its parts and how they attach, how it's used and what it never has. Those are facts: draw every part as described and stage the product only in its described use; never add what "never" lists.
+- Staging is free: any setting, person, pose, angle, props, light and mood the concept calls for. The product is held, worn, placed or used the way its photos and how_it_works show it working, with only the parts it really has, as they are. Be bold and specific: a real moment, not a catalog shot, unless the concept asks for one.`,
+  product_graphic: `- The attached product photos show the brand's real products. Feature those exact products: keep their shape, colors, materials, prints and any logos on them, and every part where it is and as it attaches. Never invent a product, change its design, or add products that aren't in the photos. Each hero product's how_it_works lists its parts, its use and what it never has: those are facts.
 - Around the real product, use the attached brand graphics as supporting elements: lift their 3D shapes, objects, patterns or illustrations into a backdrop, a frame or props around the product, as they look in those images (you may scale, rotate, crop and arrange them). They never cover, replace or change the product, and they're never turned into a product, logo, device or interface. Never copy their text, screenshots, layout or backgrounds.
 - Staging is free otherwise: setting, angle, light and mood as the concept calls for.`,
   brand_graphic: `- This ad doesn't show the product. Its one visual element comes from the attached brand graphics (the brand's own art from its website): lift the 3D shapes, objects or illustrations out of them and place one to three of them large, clean and well lit on the background, as they look in those images (you may scale, rotate, crop and arrange them). Never copy the text, screenshots, layout or backgrounds of those images, and never turn a graphic into a logo, product, device or interface.`,
@@ -168,6 +169,14 @@ export function buildAdBrief({
       ...(product.typeName && { type: product.typeName }),
       ...(product.price && { price_for_reference_only: product.price }),
       ...(product.description && { description: clip(product.description, 280) }),
+      ...(product.notes && {
+        how_it_works: {
+          what: product.notes.what,
+          parts: product.notes.parts,
+          use: product.notes.use,
+          never: product.notes.never,
+        },
+      }),
       photos: photos.map((n) => `image ${n}`),
     };
   });
