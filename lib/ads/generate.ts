@@ -4,7 +4,7 @@ import sharp from "sharp";
 
 import { broadcastAdActivity } from "@/lib/ads/activity";
 import { brandGraphics, logoImage, swatchImages } from "@/lib/ads/brand-assets";
-import { buildAdBrief, ideaVisual, showsProduct, usesGraphics, withoutEmoji } from "@/lib/ads/brief";
+import { adLink, buildAdBrief, ideaVisual, showsProduct, usesGraphics, withoutEmoji } from "@/lib/ads/brief";
 import { MAX_REPAIRS, runAdFlow, type AdCheck, type AdVerification } from "@/lib/ads/flow";
 import {
   AdExpiredError,
@@ -89,6 +89,8 @@ export type AdJob = {
   graphics?: boolean;
   /** The kit's logo URL, when it has one: the check compares the ad's logo with it. */
   logo?: string;
+  /** The store's domain shown on the ad; the check and repairs keep it exact. */
+  link?: string;
 };
 
 type Ctx = { toolCallId?: string; runId?: string };
@@ -223,6 +225,7 @@ export async function startAd(
     showProduct: showsProduct(visual),
     graphics: usesGraphics(visual) && graphics.length > 0,
     ...(logo && { logo: kit.logo }),
+    ...(adLink(kit) && { link: adLink(kit) }),
   };
   try {
     await setAdStage(campaignId, adId, "Drafting the image");
@@ -258,6 +261,7 @@ export async function checkDraft(job: AdJob, path: string): Promise<AdCheck> {
     graphics: job.graphics,
     headline: job.headline,
     cta: job.cta,
+    link: job.link,
   });
 }
 
@@ -289,6 +293,7 @@ export async function repairDraft(
       logoUrl: logo?.url,
       headline: job.headline,
       cta: job.cta,
+      link: job.link,
     });
     const out = workPath(job, round, edit);
     const saved = await uploadWithRetry(out, await workWebp(repaired.bytes), WEBP);

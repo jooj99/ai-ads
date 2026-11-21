@@ -11,7 +11,8 @@ import { withoutEmoji } from "@/lib/copy";
  * - `systemPrompt`: the standing rules for every ad (real products only,
  *   exact copy, 9:16 safe zones).
  * - `prompt`: this ad's brief as JSON (the idea's creative direction when
- *   the ad comes from one, headline, CTA, products by image number, colors,
+ *   the ad comes from one, headline, CTA, the store's link (placed where it
+ *   fits the design), products by image number, colors,
  *   fonts, voice), so each brand fact is a labeled field rather than prose
  *   the model might blur.
  *
@@ -51,7 +52,7 @@ export const AD_SYSTEM_PROMPT = `You are a senior performance-marketing art dire
 Rules for every ad:
 {{PRODUCT_RULES}}
 - Never invent anything the brand sells or shows: no made-up products, packaging, devices, app screens, dashboards, charts, maps or data. Every product, screen or interface in the ad must come from the attached photos, shown as it is. For a service or software brand, a screen may only be one of the attached screenshots, unchanged; if none is attached, show people, places or the outcome of the service instead of an interface.
-- Render the headline and the call-to-action exactly as given, spelled exactly, each once. The headline is the most prominent text. The call-to-action is a clear button. Add no other words, prices, discounts, claims or slogans, and no emojis or icon symbols anywhere in the image, except the brand name or logo.
+- Render the headline and the call-to-action exactly as given, spelled exactly, each once. The headline is the most prominent text. The call-to-action is a clear button. The brand's link appears once, spelled exactly as given, placed wherever it sits most naturally in the design (inside the button, next to or under it, or elsewhere in the layout), styled to belong to the ad and legible. Add no other words, prices, discounts, claims or slogans, and no emojis or icon symbols anywhere in the image, except the brand name or logo and that link.
 {{LOGO_RULE}}
 - Brand color swatches are solid squares of the exact brand colors. Use those exact colors, each where the brief assigns it (match the swatch, not a similar shade). The swatches are references only: never draw them.
 - Images marked as references from the user are guides they supplied: use each exactly as its note says (add that object, match that style, use that background). They don't replace the product photos unless the note says so.
@@ -110,6 +111,21 @@ export function ideaVisual(idea?: IdeaDirection): AdVisual {
 }
 
 export { withoutEmoji };
+
+/** The link shown on the ad: the store's bare domain ("loopycases.com"), short enough to read on a phone. */
+export function adLink(kit: Pick<BrandKit, "domain">): string | undefined {
+  const host = kit.domain?.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "");
+  return host || undefined;
+}
+
+/**
+ * The brand font the link is set in: the body font (small text reads best in
+ * it), else the first one listed. Display faces stay for the headline.
+ */
+function adLinkFont(kit: Pick<BrandKit, "fonts">): string | undefined {
+  const fonts = kit.fonts ?? [];
+  return (fonts.find((f) => /body|text|paragraph/i.test(f.role)) ?? fonts[0])?.family;
+}
 
 export function buildAdBrief({
   kit,
@@ -173,6 +189,8 @@ export function buildAdBrief({
   const swatchImage = new Map(swatches.map((s) => [s.hex, add(s.url)]));
 
   const brand = kit.name ?? kit.domain;
+  const link = adLink(kit);
+  const linkFont = adLinkFont(kit);
   const brief = {
     format: "Full-screen 9:16 portrait image ad for mobile social feeds and stories, full-bleed, no borders or device frames.",
     ...(idea && {
@@ -200,6 +218,17 @@ export function buildAdBrief({
     },
     headline: { text: headline, render: "Exactly this text, once, as the largest type." },
     call_to_action: { text: cta, render: "Exactly this text, once, as a button." },
+    ...(link && {
+      link: {
+        text: link,
+        ...(linkFont && { font: linkFont }),
+        render: `Exactly this text, once, where it fits the design best: inside the button with the call-to-action, next to or under it, or elsewhere in the layout. ${
+          linkFont
+            ? `Set it in ${linkFont}, the brand font listed under typography (match its letterforms, weight and feel; never a generic default font), in a brand color`
+            : "Set it in the brand's type and colors"
+        }, secondary to the headline and legible on a phone.`,
+      },
+    }),
     ...(kit.offering === "services" && {
       services_note:
         "This brand sells a service, not physical goods. The attached photos are real screenshots or photos of the service: show them unchanged. Do not draw any other screen, dashboard, app interface, chart or data, and do not invent a physical product.",

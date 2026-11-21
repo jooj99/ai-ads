@@ -110,6 +110,8 @@ export type VerifyInput = {
   /** The exact copy the ad must show, when known. */
   headline?: string;
   cta?: string;
+  /** The link the brief asked for, anywhere on the ad ("loopycases.com"). */
+  link?: string;
 };
 
 /** The problems a vision model finds in the draft. Never throws: on failure it reports none (and logs). */
@@ -157,7 +159,9 @@ export async function verifyAd(input: VerifyInput): Promise<{ checked: boolean; 
             : " An invented screen or dashboard is a problem too."
         } ${
           input.headline
-            ? `Copy: the headline must read exactly "${input.headline}" and the button exactly "${input.cta ?? ""}", each once; a repeated, missing, extra or misspelled word is a copy problem (box the text). `
+            ? `Copy: the headline must read exactly "${input.headline}" and the button exactly "${input.cta ?? ""}"${
+                input.link ? `, and the link "${input.link}" must appear somewhere (inside the button, near it or elsewhere; anywhere is fine)` : ""
+              }, each once; a repeated, missing, extra or misspelled word${input.link ? " or a misspelled or missing link" : ""} is a copy problem (box the text). `
             : ""
         }Also report every leftover editing mark (numbered circles or dots, pins, drawn boxes, arrows, labels, stray digits, watermarks) as an artifact, each with its own box. Otherwise ignore the background, people, props, lighting, colors, the headline, the button and the layout. For each problem give the tight box around the object that's wrong and say what's in it.`,
       },
@@ -216,6 +220,7 @@ export async function fixAd(input: {
   logoUrl?: string;
   headline: string;
   cta: string;
+  link?: string;
 }): Promise<FalImage> {
   const { issue } = input;
   const bucket = supabase().storage.from(AD_BUCKET);
@@ -256,12 +261,15 @@ export async function fixAd(input: {
       // Text needs an exact instruction: the model rewrites the lines as given.
       fix:
         issue.kind === "copy"
-          ? `The text is wrong: ${issue.problem} Change the headline so it reads exactly "${input.headline}" (delete any repeated or extra words or lines, add any missing ones), and the button so it reads exactly "${input.cta}". Keep the same typeface, weight, size, color and alignment; reflow the lines naturally.`
+          ? `The text is wrong: ${issue.problem} Change the headline so it reads exactly "${input.headline}" (delete any repeated or extra words or lines, add any missing ones), and the button so it reads exactly "${input.cta}"${
+              input.link ? `, and the link reads exactly "${input.link}", once (keep it where it is; if it's missing, add it where it fits the design, such as inside or under the button)` : ""
+            }. Keep the same typeface, weight, size, color and alignment; reflow the lines naturally.`
           : issue.fix,
       where: { what: issue.where, area_of_image_1: describeRegion(issue.box), ...(withCrop && { outlined_on: "image 2" }) },
       keep_exactly: {
         headline: input.headline,
         call_to_action: input.cta,
+        ...(input.link && { link: input.link }),
         everything_else: "as in image 1",
       },
     };
