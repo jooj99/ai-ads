@@ -22,7 +22,7 @@ import {
   uploadWithRetry,
 } from "@/lib/ads/render";
 import { setAdStage } from "@/lib/ads/stage";
-import { AD_BUCKET, adImageUrl } from "@/lib/ads/store";
+import { AD_BUCKET, adImageUrl, removeAdWorkFiles } from "@/lib/ads/store";
 import { describeIssues, findArtifacts, fixAd, MAX_FIXES_PER_EDIT, verifyAd, type AdIssue } from "@/lib/ads/verify";
 import { WEBP, workWebp } from "@/lib/ads/webp";
 import { getCampaignResearch } from "@/lib/campaigns";
@@ -470,12 +470,9 @@ async function failedAd(
   return { productIds: (data.product_ids as string[] | null) ?? [], idea: (data.idea as IdeaDirection | null) ?? undefined };
 }
 
-/** Deletes the ad's drafts and repair edits (`work-<ad>-…`). */
-async function removeWork(job: AdJob) {
-  const bucket = supabase().storage.from(AD_BUCKET);
-  const { data } = await bucket.list(job.campaignId, { search: `work-${job.adId}-`, limit: 100 });
-  const paths = (data ?? []).map((f) => `${job.campaignId}/${f.name}`);
-  if (paths.length) await bucket.remove(paths).catch(() => undefined);
+/** Deletes the ad's drafts and repair edits (`work-<ad>-…`) and any repair copies a crash left. */
+function removeWork(job: AdJob) {
+  return removeAdWorkFiles(job.campaignId, job.adId);
 }
 
 export function adResult(

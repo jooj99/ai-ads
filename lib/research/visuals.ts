@@ -9,6 +9,7 @@ import type { BrandVisual, CatalogItem } from "./types";
 import { absoluteUrl, isPublicHttpUrl } from "./url";
 import { GATEWAY_CACHING } from "@/lib/ai-caching";
 import { withStallRetry } from "@/lib/ai-retry";
+import { publicFetch } from "@/lib/research/public-fetch";
 
 /**
  * The brand's own graphics: 3D shapes, a mascot, illustrations, patterns,
@@ -133,7 +134,7 @@ export async function classifyVisuals(brand: string, candidates: VisualCandidate
     await Promise.all(
       candidates.map(async ({ url, source }) => {
         try {
-          const res = await fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(10_000) });
+          const res = await publicFetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(10_000) });
           if (!res.ok) return null;
           const img = sharp(Buffer.from(await res.arrayBuffer()));
           const meta = await img.metadata();

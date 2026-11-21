@@ -6,7 +6,7 @@ import { WorkflowRunNotFoundError } from "workflow/internal/errors";
 
 import { broadcastAdActivity } from "@/lib/ads/activity";
 import { AD_MODEL, falCredentials } from "@/lib/ads/render";
-import { AD_BUCKET } from "@/lib/ads/store";
+import { removeAdWorkFiles } from "@/lib/ads/store";
 import { supabase } from "@/lib/supabase/server";
 
 /**
@@ -30,14 +30,21 @@ export const AD_TIMEOUT_MS = 10 * 60_000;
 export const RUN_ENDED = "The run making it stopped before it finished.";
 export const TIMED_OUT = "It took over 10 minutes, so it was stopped.";
 
-type Row = { id: string; campaign_id: string; run_id: string | null; created_at: string; fal_request_id: string | null };
+type Row = {
+  id: string;
+  campaign_id: string;
+  run_id: string | null;
+  created_at: string;
+  fal_request_id: string | null;
+  tool_call_id: string | null;
+};
 
 export async function expireStaleAds(campaignId?: string): Promise<number> {
   try {
     const db = supabase();
     let query = db
       .from("campaign_ads")
-      .select("id, campaign_id, run_id, created_at, fal_request_id")
+      .select("id, campaign_id, run_id, created_at, fal_request_id, tool_call_id")
       .eq("status", "generating");
     if (campaignId) query = query.eq("campaign_id", campaignId);
     const { data, error } = await query;
@@ -75,7 +82,7 @@ export async function expireStaleAds(campaignId?: string): Promise<number> {
         await fal.queue.cancel(AD_MODEL, { requestId: row.fal_request_id }).catch(() => undefined);
       }
       // A live run still reads its drafts; it cleans them up when it sees the row failed.
-      if (!runAlive) await removeWorkFiles(row.campaign_id, row.id);
+      if (!runAlive) await removeAdWorkFiles(row.campaign_id, row.id, row.tool_call_id);
       console.warn(`[ads] ad ${row.id} marked failed: ${reason}`);
     }
     for (const id of new Set(dead.map((d) => d.row.campaign_id))) await broadcastAdActivity(id);
@@ -94,13 +101,4 @@ async function runEnded(runId: string): Promise<boolean> {
   } catch (error) {
     return WorkflowRunNotFoundError.is(error);
   }
-}
-
-async function removeWorkFiles(campaignId: string, adId: string) {
-  try {
-    const bucket = supabase().storage.from(AD_BUCKET);
-    const { data } = await bucket.list(campaignId, { search: `work-${adId}-`, limit: 100 });
-    const names = (data ?? []).map((f) => `${campaignId}/${f.name}`);
-    if (names.length) await bucket.remove(names);
-  } catch {}
 }

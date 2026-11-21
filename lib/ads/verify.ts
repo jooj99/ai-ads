@@ -13,6 +13,7 @@ import { AD_BUCKET } from "@/lib/ads/store";
 import { supabase } from "@/lib/supabase/server";
 import { GATEWAY_CACHING } from "@/lib/ai-caching";
 import { ModelStalledError, withStallRetry } from "@/lib/ai-retry";
+import { publicFetch } from "@/lib/research/public-fetch";
 
 /**
  * Checks a freshly generated ad before anyone sees it, and repairs it when
@@ -88,9 +89,11 @@ async function prepare(image: Uint8Array, size: number, flatten = false) {
   return (flatten ? img.flatten({ background: "#9e9e9e" }) : img).jpeg({ quality: 85 }).toBuffer();
 }
 
-async function download(url: string): Promise<Uint8Array | null> {
+/** `ours`: a signed URL from our own bucket (local Supabase in dev); anything else is a page's image. */
+async function download(url: string, ours = false): Promise<Uint8Array | null> {
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    const init = { signal: AbortSignal.timeout(10_000) };
+    const res = await (ours ? fetch(url, init) : publicFetch(url, init));
     return res.ok ? new Uint8Array(await res.arrayBuffer()) : null;
   } catch {
     return null;
@@ -128,7 +131,7 @@ export async function verifyAd(input: VerifyInput): Promise<VerifyResult> {
   try {
     const [ad, logo, products] = await Promise.all([
       prepare(input.image, 1024),
-      input.logoUrl ? download(input.logoUrl).then((b) => (b ? prepare(b, 512, true) : null)) : Promise.resolve(null),
+      input.logoUrl ? download(input.logoUrl, true).then((b) => (b ? prepare(b, 512, true) : null)) : Promise.resolve(null),
       Promise.all(input.productUrls.slice(0, 6).map((u) => download(u).then((b) => (b ? prepare(b, 512) : null)))),
     ]);
     const refs = products.filter((p) => p !== null);

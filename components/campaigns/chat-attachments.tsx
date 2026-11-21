@@ -14,7 +14,8 @@ export const MAX_PICK_BYTES = 25 * 1024 * 1024;
 
 /** Longest side an attached image is uploaded at; enough for the image model as a reference. */
 const MAX_SIDE = 2048;
-const MAX_UPLOAD_BYTES = 7 * 1024 * 1024;
+/** Sent as is up to this size; bigger ones are re-encoded. Vercel rejects request bodies over 4.5 MB. */
+const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
 
 /** The paperclip: opens the file picker (paste and drop work too). */
 export function AttachButton({ disabled }: { disabled?: boolean }) {
@@ -93,7 +94,14 @@ async function shrink(blob: Blob): Promise<Blob> {
   canvas.height = Math.round(bitmap.height * scale);
   canvas.getContext("2d")!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   bitmap.close();
-  return new Promise((resolve, reject) =>
-    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("The image couldn't be read."))), "image/webp", 0.9),
-  );
+  const encode = (quality: number) =>
+    new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("The image couldn't be read."))), "image/webp", quality),
+    );
+  // A very detailed photo can still be too big at high quality: step down until it fits.
+  for (const quality of [0.9, 0.75]) {
+    const out = await encode(quality);
+    if (out.size <= MAX_UPLOAD_BYTES) return out;
+  }
+  return encode(0.6);
 }

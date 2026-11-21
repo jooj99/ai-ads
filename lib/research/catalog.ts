@@ -5,6 +5,7 @@ import { classifyLinks, type CandidateLink, type LinkPicks, type PickedLink } fr
 import { DAY_MS, withRateLimitRetry, type PageResearch } from "./page";
 import { MAX_PRODUCT_TYPES, type Offering, type Product } from "./types";
 import { absoluteUrl, isPublicHttpUrl } from "./url";
+import { publicFetch } from "@/lib/research/public-fetch";
 
 /**
  * Catalog discovery for sites without Shopify's /products.json. A small model
@@ -524,7 +525,7 @@ function hostOf(src: string | undefined): string[] {
 async function shopifyProduct(url: URL): Promise<Product | null> {
   const handle = url.pathname.match(/\/products\/([^/?#.]+)/)?.[1];
   if (!handle) return null;
-  const res = await fetch(`${url.origin}/products/${handle}.json`, {
+  const res = await publicFetch(`${url.origin}/products/${handle}.json`, {
     headers: { accept: "application/json" },
     signal: AbortSignal.timeout(10_000),
   });

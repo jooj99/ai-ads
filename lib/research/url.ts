@@ -14,17 +14,20 @@ const PRIVATE_IPV4 = [
 /**
  * Blocks hosts that would make our server fetch its own network (SSRF):
  * localhost, internal names and private IP literals. Public DNS names that
- * resolve privately are not caught here; Firecrawl does the heavy fetching
- * from its own infrastructure, and our direct fetches are read-only GETs.
+ * resolve privately, and redirects to private hosts, are caught by
+ * `publicFetch` (lib/research/public-fetch.ts), which our direct fetches use.
  */
 function isPrivateHost(host: string): boolean {
   if (host === "localhost" || host.endsWith(".localhost")) return true;
   if (host.endsWith(".local") || host.endsWith(".internal")) return true;
   if (host.startsWith("[")) return true; // IPv6 literals
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
-    return PRIVATE_IPV4.some((range) => range.test(host));
-  }
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return isPrivateIPv4(host);
   return false;
+}
+
+/** A private, loopback, link-local or carrier-NAT IPv4 address. */
+export function isPrivateIPv4(ip: string): boolean {
+  return PRIVATE_IPV4.some((range) => range.test(ip));
 }
 
 /** True for public https/http URLs; used before fetching URLs found inside pages. */

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { supabase } from "@/lib/supabase/server";
+import { listAll, removeAll } from "@/lib/storage";
 
 /**
  * Private bucket for generated ads. Each ad version is `<campaign id>/<ad id>.png`
@@ -22,16 +22,27 @@ export function adImageUrl(campaignId: string, imagePath: string) {
 }
 
 export async function deleteAdFiles(campaignId: string, names?: string[]): Promise<void> {
-  const bucket = supabase().storage.from(AD_BUCKET);
-  let files = names;
-  if (!files) {
-    const { data, error } = await bucket.list(campaignId, { limit: 1000 });
-    if (error) throw error;
-    files = (data ?? []).map((f) => f.name);
-  }
   // Each ad's preview goes with it.
-  files = [...new Set(files.flatMap((name) => [name, previewPath(name)]))];
-  if (!files.length) return;
-  const { error } = await bucket.remove(files.map((name) => `${campaignId}/${name}`));
-  if (error) throw error;
+  const files = [...new Set((names ?? (await listAll(AD_BUCKET, campaignId))).flatMap((name) => [name, previewPath(name)]))];
+  await removeAll(AD_BUCKET, files.map((name) => `${campaignId}/${name}`));
+}
+
+/**
+ * An ad's working files: its drafts and repairs (`work-<ad>-…`), the check's
+ * repair copies (`check-<ad>-…`, `marks-check-<ad>-…`) and, for an edit, its
+ * temporary copies (`edit-<call>` / `marks-<call>`). Each run deletes its own
+ * as it ends; this is for one that never got to (stopped, or its run died).
+ * Never throws.
+ */
+export async function removeAdWorkFiles(campaignId: string, adId: string, toolCallId?: string | null): Promise<void> {
+  try {
+    const found = await Promise.all(
+      [`work-${adId}-`, `check-${adId}-`, `marks-check-${adId}-`].map((prefix) => listAll(AD_BUCKET, campaignId, prefix)),
+    );
+    const names = found.flat().map((name) => `${campaignId}/${name}`);
+    if (toolCallId) names.push(`${campaignId}/edit-${toolCallId}.webp`, `${campaignId}/marks-${toolCallId}.webp`);
+    await removeAll(AD_BUCKET, names);
+  } catch (error) {
+    console.warn(`[ads] removing work files of ${adId} failed`, error);
+  }
 }

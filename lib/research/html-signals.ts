@@ -1,5 +1,6 @@
 import type { BrandColor, BrandFont } from "./types";
 import { absoluteUrl, isPublicHttpUrl } from "./url";
+import { publicFetch } from "@/lib/research/public-fetch";
 
 /**
  * Reads brand signals straight out of a page's HTML and CSS. This backs up
@@ -44,7 +45,7 @@ const LOGO_WORDS = /logo|wordmark|brand-?mark/i;
 
 /** Fetches the page HTML directly (the fallback when Firecrawl is unavailable). */
 export async function fetchHtml(url: URL): Promise<{ html: string; base: string }> {
-  const res = await fetch(url, {
+  const res = await publicFetch(url, {
     headers: { "user-agent": UA, accept: "text/html" },
     signal: AbortSignal.timeout(12_000),
   });
@@ -118,7 +119,7 @@ export async function fetchStylesheets(html: string, base: string, limit = MAX_S
 
   const get = async (href: string, referer: string): Promise<Stylesheet | null> => {
     try {
-      const res = await fetch(href, { headers: assetHeaders("style", href, referer), signal: AbortSignal.timeout(6_000) });
+      const res = await publicFetch(href, { headers: assetHeaders("style", href, referer), signal: AbortSignal.timeout(6_000) });
       if (!res.ok) return null;
       return { href: res.url || href, css: (await res.text()).slice(0, MAX_CSS_BYTES) };
     } catch {
@@ -334,7 +335,7 @@ export async function probeLogoPaths(origin: string): Promise<LogoCandidate | nu
   const checks = await Promise.all(
     CONVENTIONAL_LOGO_PATHS.map(async (path) => {
       try {
-        const res = await fetch(new URL(path, origin), {
+        const res = await publicFetch(new URL(path, origin), {
           method: "HEAD",
           headers: { "user-agent": UA },
           signal: AbortSignal.timeout(5_000),

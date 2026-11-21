@@ -1,5 +1,6 @@
 import "server-only";
 
+import { listAll, removeAll } from "@/lib/storage";
 import { supabase } from "@/lib/supabase/server";
 
 /**
@@ -15,7 +16,8 @@ import { supabase } from "@/lib/supabase/server";
 
 export const UPLOAD_BUCKET = "chat-uploads";
 export const UPLOAD_TYPES: Record<string, string> = { png: "image/png", jpg: "image/jpeg", webp: "image/webp" };
-export const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
+/** Vercel rejects a function's request body over 4.5 MB; the chat shrinks images below this first. */
+export const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
 
 const FILE = /^[0-9a-f-]{36}\.(png|jpg|webp)$/;
 
@@ -64,13 +66,8 @@ export async function signUploads(campaignId: string, names: string[], seconds =
 }
 
 export async function deleteUploads(campaignId: string): Promise<void> {
-  const bucket = supabase().storage.from(UPLOAD_BUCKET);
-  const { data, error } = await bucket.list(campaignId, { limit: 1000 });
-  if (error) throw error;
-  if (data?.length) {
-    const { error: removeError } = await bucket.remove(data.map((f) => `${campaignId}/${f.name}`));
-    if (removeError) throw removeError;
-  }
+  const names = await listAll(UPLOAD_BUCKET, campaignId);
+  await removeAll(UPLOAD_BUCKET, names.map((name) => `${campaignId}/${name}`));
 }
 
 /** A reference the agent passes to an ad tool: an upload's name and how to use it. */

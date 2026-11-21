@@ -4,12 +4,13 @@ import { createFalClient } from "@fal-ai/client";
 import { getRun } from "workflow/api";
 
 import { broadcastAdActivity } from "@/lib/ads/activity";
-import { AD_BUCKET, previewPath } from "@/lib/ads/store";
+import { AD_BUCKET, previewPath, removeAdWorkFiles } from "@/lib/ads/store";
 import { asPng, previewWebp, WEBP } from "@/lib/ads/webp";
 import type { BrandKit, CatalogItem } from "@/lib/research/types";
 import { fetchLocal, isLocalUrl } from "@/lib/reachable";
 import { isPublicHttpUrl } from "@/lib/research/url";
 import { supabase } from "@/lib/supabase/server";
+import { publicFetch } from "@/lib/research/public-fetch";
 
 /**
  * What new ads (generate.ts) and edits (edit.ts) share: the fal call, copying
@@ -352,17 +353,6 @@ export async function cancelAd(campaignId: string, adId: string): Promise<boolea
   return true;
 }
 
-/** An ad's drafts and repairs (`work-<ad>-…`) and an edit's temporary copies (`edit-` / `marks-<call>`). Never throws. */
-async function removeAdWorkFiles(campaignId: string, adId: string, toolCallId: string | null) {
-  try {
-    const bucket = supabase().storage.from(AD_BUCKET);
-    const { data } = await bucket.list(campaignId, { search: `work-${adId}-`, limit: 100 });
-    const names = (data ?? []).map((f) => `${campaignId}/${f.name}`);
-    if (toolCallId) names.push(`${campaignId}/edit-${toolCallId}.webp`, `${campaignId}/marks-${toolCallId}.webp`);
-    if (names.length) await bucket.remove(names);
-  } catch {}
-}
-
 /** Marks an ad row failed with the reason. */
 export async function failAdRow(adId: string, reason: string) {
   await supabase().from("campaign_ads").update({ status: "failed", error: reason }).eq("id", adId);
@@ -412,7 +402,7 @@ export async function chooseProducts(kit: BrandKit, ids: string[], fallbackToHer
 export async function loads(url: string): Promise<boolean> {
   if (!isPublicHttpUrl(url)) return false;
   try {
-    const res = await fetch(url, { method: "GET", headers: { range: "bytes=0-0" }, signal: AbortSignal.timeout(6_000) });
+    const res = await publicFetch(url, { method: "GET", headers: { range: "bytes=0-0" }, signal: AbortSignal.timeout(6_000) });
     void res.body?.cancel();
     return res.ok && (res.headers.get("content-type") ?? "").startsWith("image/");
   } catch {

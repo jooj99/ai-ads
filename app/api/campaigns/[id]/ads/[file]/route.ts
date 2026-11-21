@@ -20,8 +20,10 @@ export async function GET(_req: Request, ctx: RouteContext<"/api/campaigns/[id]/
   if (!UUID.test(id) || !ext) return new Response("Not found", { status: 404 });
 
   const bucket = supabase().storage.from(AD_BUCKET);
-  const { data, error } = await bucket.download(`${id}/${file}`);
-  let body: Blob | Uint8Array | undefined = !error && data ? data : undefined;
+  // Streamed: a full PNG is often over 4.5 MB, Vercel's cap on a function's
+  // response body unless it's streamed (the Download button would fail).
+  const { data, error } = await bucket.download(`${id}/${file}`).asStream();
+  let body: ReadableStream | Uint8Array | undefined = !error && data ? data : undefined;
   // An ad made before previews existed: make its preview from the PNG once,
   // store it, and serve it (later requests get the stored one).
   if (!body && ext === "webp") {

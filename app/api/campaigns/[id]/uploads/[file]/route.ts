@@ -11,7 +11,8 @@ export async function GET(_req: Request, ctx: RouteContext<"/api/campaigns/[id]/
   const { id, file } = await ctx.params;
   if (!UUID.test(id) || !isUploadName(file)) return new Response("Not found", { status: 404 });
 
-  const { data, error } = await supabase().storage.from(UPLOAD_BUCKET).download(`${id}/${file}`);
+  // Streamed, like ads: a function's unstreamed response is capped at 4.5 MB on Vercel.
+  const { data, error } = await supabase().storage.from(UPLOAD_BUCKET).download(`${id}/${file}`).asStream();
   if (error || !data) return new Response("Not found", { status: 404 });
   return new Response(data, {
     headers: {

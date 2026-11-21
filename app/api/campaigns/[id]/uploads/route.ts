@@ -19,7 +19,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/campaigns/[id]/
   const form = await req.formData().catch(() => null);
   const file = form?.get("file");
   if (!(file instanceof File)) return Response.json({ error: "No image attached." }, { status: 400 });
-  if (file.size > MAX_UPLOAD_BYTES) return Response.json({ error: "Images can be up to 8 MB." }, { status: 413 });
+  if (file.size > MAX_UPLOAD_BYTES) return Response.json({ error: "Images can be up to 4 MB." }, { status: 413 });
 
   const bytes = new Uint8Array(await file.arrayBuffer());
   const kind = sniffImage(bytes);

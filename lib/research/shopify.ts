@@ -1,4 +1,5 @@
 import type { Product } from "./types";
+import { publicFetch } from "@/lib/research/public-fetch";
 
 /**
  * Shopify stores expose their catalog as public JSON (`/products.json`), which
@@ -23,7 +24,7 @@ export type ShopifyStore = {
 /** Returns the store if `/meta.json` answers like Shopify, otherwise null. */
 export async function detectShopify(url: URL): Promise<ShopifyStore | null> {
   try {
-    const res = await fetch(new URL("/meta.json", url), {
+    const res = await publicFetch(new URL("/meta.json", url), {
       headers: HEADERS,
       signal: AbortSignal.timeout(8_000),
     });
@@ -63,7 +64,7 @@ export async function fetchShopifyCatalog(
   const raw: RawProduct[] = [];
 
   for (let page = 1; page <= MAX_PAGES; page++) {
-    const res = await fetch(
+    const res = await publicFetch(
       `${store.origin}/products.json?limit=${PAGE_SIZE}&page=${page}`,
       { headers: HEADERS, signal: AbortSignal.timeout(15_000) },
     );

@@ -9,6 +9,7 @@ import { loads } from "@/lib/ads/render";
 import type { BrandColor, BrandKit, BrandVisual } from "@/lib/research/types";
 import { isPublicHttpUrl } from "@/lib/research/url";
 import { supabase } from "@/lib/supabase/server";
+import { publicFetch } from "@/lib/research/public-fetch";
 
 /**
  * The brand kit as images Nano Banana can take as context:
@@ -69,7 +70,7 @@ async function logoBytes(logo: string): Promise<Buffer | null> {
     return base64 ? Buffer.from(data, "base64") : Buffer.from(decodeURIComponent(data), "utf8");
   }
   if (!isPublicHttpUrl(logo)) return null;
-  const res = await fetch(logo, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(8_000) });
+  const res = await publicFetch(logo, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(8_000) });
   return res.ok ? Buffer.from(await res.arrayBuffer()) : null;
 }
 

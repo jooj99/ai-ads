@@ -24,7 +24,8 @@ export async function GET(_req: Request, ctx: RouteContext<"/api/campaigns/[id]/
   return new Response(data, {
     headers: {
       "content-type": FONT_TYPES[ext] ?? "application/octet-stream",
-      "cache-control": "public, max-age=31536000, immutable",
+      // private: the route is signed-in only, so no shared cache may keep a copy.
+      "cache-control": "private, max-age=31536000, immutable",
     },
   });
 }

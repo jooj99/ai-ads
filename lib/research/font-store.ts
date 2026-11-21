@@ -2,11 +2,13 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 
+import { listAll, removeAll } from "@/lib/storage";
 import { supabase } from "@/lib/supabase/server";
 
 import type { BrandFont, FontFile } from "./types";
 import { assetHeaders } from "./html-signals";
 import { isPublicHttpUrl } from "./url";
+import { publicFetch } from "@/lib/research/public-fetch";
 
 export const FONT_BUCKET = "brand-fonts";
 
@@ -88,7 +90,7 @@ async function download(file: FontFile, siteUrl: string): Promise<{ bytes: Buffe
   for (const url of urls) {
     for (const referer of referers) {
       try {
-        const res = await fetch(url, { headers: assetHeaders("font", url, referer), signal: AbortSignal.timeout(10_000) });
+        const res = await publicFetch(url, { headers: assetHeaders("font", url, referer), signal: AbortSignal.timeout(10_000) });
         if (!res.ok) {
           failures.push(`HTTP ${res.status}`);
           continue;
@@ -118,11 +120,6 @@ async function download(file: FontFile, siteUrl: string): Promise<{ bytes: Buffe
 
 /** Deletes a campaign's stored font files (when the campaign is deleted). */
 export async function deleteFontFiles(campaignId: string): Promise<void> {
-  const bucket = supabase().storage.from(FONT_BUCKET);
-  const { data, error } = await bucket.list(campaignId, { limit: 1000 });
-  if (error) throw error;
-  if (data?.length) {
-    const { error: removeError } = await bucket.remove(data.map((f) => `${campaignId}/${f.name}`));
-    if (removeError) throw removeError;
-  }
+  const names = await listAll(FONT_BUCKET, campaignId);
+  await removeAll(FONT_BUCKET, names.map((name) => `${campaignId}/${name}`));
 }

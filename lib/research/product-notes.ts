@@ -10,6 +10,7 @@ import { saveProductNotes } from "@/lib/campaigns";
 import { RESEARCH_MODEL } from "@/lib/research/insights";
 import type { CatalogItem, ProductNotes } from "@/lib/research/types";
 import { isPublicHttpUrl } from "@/lib/research/url";
+import { publicFetch } from "@/lib/research/public-fetch";
 
 /**
  * Product notes: a vision model looks at a product's own photos and its
@@ -146,7 +147,7 @@ export function notesText(p: { title: string; notes?: ProductNotes }): string | 
 
 async function photo(url: string): Promise<Uint8Array | null> {
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    const res = await publicFetch(url, { signal: AbortSignal.timeout(10_000) });
     if (!res.ok) return null;
     const bytes = Buffer.from(await res.arrayBuffer());
     return new Uint8Array(
