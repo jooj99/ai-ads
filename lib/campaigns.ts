@@ -92,15 +92,21 @@ export async function createCampaign(url: URL): Promise<Campaign> {
 }
 
 export async function listCampaigns(): Promise<CampaignSummary[]> {
+  // One round trip, not three: the list, the ad counts (for every campaign; the
+  // table is small) and the stale-ad sweep (ads that can't finish any more
+  // aren't "Making…") run at the same time.
+  const adsAt = new Date().toISOString();
+  const noActivity = new Map<string, AdActivity>();
+  const activityRead = Promise.all([expireStaleAds(), adActivity().catch(() => noActivity)]);
   const { data, error } = await supabase()
     .from("campaigns")
     .select("*, brand_kits(logo_url, offering, research_steps)")
     .order("created_at", { ascending: false })
     .limit(100);
   if (error) throw error;
-  await expireStaleAds(); // ads that can't finish any more aren't "Making…"
-  const adsAt = new Date().toISOString();
-  const activity = await adActivity((data ?? []).map((row) => row.id as string)).catch(() => new Map<string, AdActivity>());
+  const [expired, readActivity] = await activityRead;
+  // The sweep rarely finds anything; when it does, count again without those ads.
+  const activity = expired ? await adActivity().catch(() => noActivity) : readActivity;
   return (data ?? []).map((row) => {
     const kit = row.brand_kits as {
       logo_url: string | null;
@@ -463,6 +469,16 @@ export type SavedAd = {
   /** While generating: what it's doing now ("Fixing the logo (round 1 of 3)"). */
   stage: string | null;
 };
+
+/**
+ * The campaign's ads, with ads that can't finish any more marked failed
+ * (`expireStaleAds`). The sweep and the read run at the same time; in the rare
+ * case the sweep changed something, the ads are read again.
+ */
+export async function listCurrentAds(id: string): Promise<SavedAd[]> {
+  const [expired, ads] = await Promise.all([expireStaleAds(id), listAds(id)]);
+  return expired ? listAds(id) : ads;
+}
 
 /** The campaign's ads, newest first. */
 export async function listAds(id: string): Promise<SavedAd[]> {

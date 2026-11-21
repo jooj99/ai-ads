@@ -45,16 +45,15 @@ export async function expireStaleAds(campaignId?: string): Promise<number> {
     const rows = (data ?? []) as Row[];
     if (!rows.length) return 0;
 
-    // One lookup per run.
-    const runs = new Map<string, Promise<boolean>>();
-    const ended = (runId: string) => {
-      if (!runs.has(runId)) runs.set(runId, runEnded(runId));
-      return runs.get(runId)!;
-    };
+    // One lookup per run, all at once (each is a call to the Workflow service).
+    const runIds = [...new Set(rows.flatMap((r) => (r.run_id ? [r.run_id] : [])))];
+    const endedRuns = new Map(
+      await Promise.all(runIds.map(async (id) => [id, await runEnded(id)] as const)),
+    );
     const now = Date.now();
     const dead: { row: Row; reason: string; runAlive: boolean }[] = [];
     for (const row of rows) {
-      const runDead = row.run_id ? await ended(row.run_id) : false;
+      const runDead = row.run_id ? (endedRuns.get(row.run_id) ?? false) : false;
       if (runDead) dead.push({ row, reason: RUN_ENDED, runAlive: false });
       else if (now - Date.parse(row.created_at) >= AD_TIMEOUT_MS) {
         dead.push({ row, reason: TIMED_OUT, runAlive: Boolean(row.run_id) });

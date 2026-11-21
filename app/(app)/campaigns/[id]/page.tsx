@@ -5,8 +5,7 @@ import { Suspense } from "react";
 
 import { CampaignWorkspace } from "@/components/campaigns/campaign-workspace";
 import { Skeleton } from "@/components/ui/skeleton";
-import { expireStaleAds } from "@/lib/ads/expire";
-import { getCampaignResearch, getChat, listAds, listHeadlines } from "@/lib/campaigns";
+import { getCampaignResearch, getChat, listCurrentAds, listHeadlines } from "@/lib/campaigns";
 import { requireUser } from "@/lib/supabase/auth";
 
 export const metadata: Metadata = { title: "Campaign" };
@@ -27,14 +26,14 @@ async function Campaign({ params }: { params: PageProps<"/campaigns/[id]">["para
   let research: Awaited<ReturnType<typeof getCampaignResearch>>;
   let messages: Awaited<ReturnType<typeof getChat>>;
   let headlines: Awaited<ReturnType<typeof listHeadlines>>;
-  let ads: Awaited<ReturnType<typeof listAds>>;
+  let ads: Awaited<ReturnType<typeof listCurrentAds>>;
   try {
     [research, messages, headlines, ads] = await Promise.all([
       getCampaignResearch(id),
       getChat(id),
       listHeadlines(id),
       // Ads that can't finish any more (their run died, or 10+ minutes) show as failed.
-      expireStaleAds(id).then(() => listAds(id)),
+      listCurrentAds(id),
     ]);
   } catch (error) {
     console.error("[campaigns] load failed", error);

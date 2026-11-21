@@ -21,7 +21,7 @@ Working software that feels good beats breadth. Tool failures must degrade grace
 - fal.ai for image generation. fal URLs are not durable: **always copy outputs into Supabase Storage** and store our URL, never fal's.
 - Firecrawl or a web search API for research
 - LLM via Vercel AI Gateway
-- Hosted on Vercel, project `jiu-jiu-s-team/ai-ads`, connected to GitHub `jooj99/ai-ads`. Pushes to `main` deploy to production at https://ai-ads-dusky.vercel.app; PRs get preview deploys.
+- Hosted on Vercel, project `jiu-jiu-s-team/ai-ads`, connected to GitHub `jooj99/ai-ads`. Pushes to `main` deploy to production at https://ai-ads-dusky.vercel.app; PRs get preview deploys. Functions run in **pdx1** (Oregon, `vercel.json` `regions`), next to the Supabase project in us-west-2. They used to run in iad1 (Virginia), where each database request took about 270ms at Supabase's edge although Postgres ran it in under 5ms. Pages load their data in one round where they can: the Campaigns list reads campaigns, ad counts and the stale-ad sweep at the same time (`listCampaigns`), a campaign's ads come from `listCurrentAds` (sweep and read together, read again only if the sweep changed something), and the sweep checks Workflow runs in parallel.
 
 ## Check current docs, not memory
 

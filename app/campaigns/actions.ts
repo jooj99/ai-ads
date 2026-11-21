@@ -3,7 +3,6 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
-import { expireStaleAds } from "@/lib/ads/expire";
 import { broadcast } from "@/lib/broadcast";
 import { campaignTopic, EVENTS } from "@/lib/realtime";
 import { requireUser } from "@/lib/supabase/auth";
@@ -16,7 +15,7 @@ import {
   updateAdComment,
   reviewAdComment,
   deleteCampaign,
-  listAds,
+  listCurrentAds,
   listHeadlines,
   removeHeadline,
   renameCampaign,
@@ -164,8 +163,7 @@ export async function listAdsAction(campaignId: string): Promise<SavedAd[] | nul
   await requireUser();
   if (!id.safeParse(campaignId).success) return null;
   try {
-    await expireStaleAds(campaignId);
-    return await listAds(campaignId);
+    return await listCurrentAds(campaignId);
   } catch (error) {
     console.error("[campaigns] listing ads failed", error);
     return null;
