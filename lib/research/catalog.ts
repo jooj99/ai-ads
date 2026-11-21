@@ -1,6 +1,6 @@
 import type Firecrawl from "@mendable/firecrawl-js";
 
-import { fetchHtml, imagesFromHtml, isImageFragment, type LayoutLink } from "./html-signals";
+import { fetchHtml, imagesFromHtml, isImageFragment, mapLimit, type LayoutLink } from "./html-signals";
 import { classifyLinks, type CandidateLink, type LinkPicks, type PickedLink } from "./links";
 import { DAY_MS, withRateLimitRetry, type PageResearch } from "./page";
 import { MAX_PRODUCT_TYPES, type Offering, type Product } from "./types";
@@ -24,6 +24,14 @@ const SERVICE_INDEX = /services|treatments|what we do|what-we-do|our menu|pricin
 
 /** Firecrawl calls per research run stay under the free plan's ~15/minute. */
 const MAX_PAGE_READS = 8;
+/**
+ * Offering pages read as plain HTML once the Firecrawl reads are used up: free
+ * and not rate limited, so a big menu (every Mac, every iPhone) still gets in.
+ * A catalog tops out around MAX_PAGE_READS + this.
+ */
+const MAX_HTML_READS = 48;
+/** Plain HTML reads at a time, to go easy on the store's server. */
+const HTML_READ_CONCURRENCY = 6;
 /** Links offered to the link picker: labeled navbar/footer links first, then page links. */
 const MAX_PICKER_LINKS = 150;
 
@@ -89,6 +97,36 @@ function toLayoutLink(link: PickedLink): LayoutLink {
   return { text: link.text, url: link.url, area: "nav" };
 }
 
+/**
+ * The picker's offering URLs, taking turns across its groups (the site's
+ * product lines) so the page-read cap covers every line before a second page
+ * of any: one Mac, one iPad, one iPhone… rather than the first 8 in menu
+ * order (Vision Pro and seven Macs on apple.com). Groups keep the order they
+ * first appear in; ungrouped links share one turn per round, after the groups.
+ */
+export function spreadAcrossGroups(links: PickedLink[]): string[] {
+  const groups = new Map<string, string[]>();
+  const ungrouped: string[] = [];
+  for (const l of links) {
+    const group = l.group?.trim().toLowerCase();
+    if (!group) ungrouped.push(l.url);
+    else groups.set(group, [...(groups.get(group) ?? []), l.url]);
+  }
+  const queues = [...groups.values(), ...(ungrouped.length ? [ungrouped] : [])];
+  const out: string[] = [];
+  for (let round = 0; out.length < links.length; round++) {
+    let added = false;
+    for (const queue of queues) {
+      if (round < queue.length) {
+        out.push(queue[round]);
+        added = true;
+      }
+    }
+    if (!added) break;
+  }
+  return unique(out);
+}
+
 /** True when the picker named at least one offering or index to read. */
 function hasPicks(picks: LinkPicks | null | undefined): picks is LinkPicks {
   return Boolean(picks && (picks.offerings.length > 0 || picks.indexes.length > 0));
@@ -110,7 +148,7 @@ export async function findSiteProducts(
 
   // Offering pages the picker found are products in their own right (a
   // software module, a product line), not categories to dig under.
-  const offeringPages = picked?.offerings.map((l) => l.url) ?? [];
+  const offeringPages = picked ? spreadAcrossGroups(picked.offerings) : [];
   const typeOf = new Map<string, string>(
     (picked?.offerings ?? []).flatMap((l): [string, string][] => {
       const type = l.group ?? cleanLinkText(l.text);
@@ -213,8 +251,19 @@ export async function findSiteProducts(
     ];
   });
 
+  // The picker's offering pages past the Firecrawl cap: read as plain HTML
+  // (title, JSON-LD, share image and page photos), free and not rate limited.
+  // Pages that only render with JavaScript come back empty and are skipped.
+  const overflow = offeringPages.filter((u) => !targets.includes(u)).slice(0, MAX_HTML_READS);
+  const htmlReads = await mapLimit(overflow, HTML_READ_CONCURRENCY, (link) =>
+    readProductPage(null, new URL(link)).catch(() => null),
+  );
+  const fromHtml = htmlReads.flatMap((p, i): Product[] =>
+    p ? [{ ...p, id: overflow[i], productType: typeOf.get(overflow[i]) ?? p.productType }] : [],
+  );
+
   return withoutSiteChrome(
-    [...products, ...itemsFromExtraction(featured, url.href, products)],
+    [...products, ...fromHtml, ...itemsFromExtraction(featured, url.href, products)],
     notItemPhotos(page),
   );
 }
@@ -295,7 +344,9 @@ export async function findSiteServices(
   const extracted = extractFrom ? await extractItems(fc, extractFrom, "services") : [];
 
   const extractedUrls = sameSiteUrls(extracted, url.href, host);
-  const linkUrls = serviceLinks.map((l) => l.url);
+  // The picker's offerings take turns across their groups (as for goods), so
+  // the read cap covers every line of services.
+  const linkUrls = picked ? spreadAcrossGroups(picked.offerings) : serviceLinks.map((l) => l.url);
   // The picker's offerings are the site's own headline list, so they're read first.
   const targets = unique(picked ? [...linkUrls, ...extractedUrls] : [...extractedUrls, ...linkUrls])
     .filter((u) => u !== index?.url && u !== url.href)

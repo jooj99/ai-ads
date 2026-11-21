@@ -147,7 +147,7 @@ export async function fetchStylesheets(html: string, base: string, limit = MAX_S
 }
 
 /** Runs `fn` over `items`, at most `limit` at a time, keeping their order. */
-async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
   let next = 0;
   await Promise.all(
