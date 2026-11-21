@@ -8,9 +8,28 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
-const EXAMPLES = ["loopycases.com", "warbyparker.com", "waxcenter.com"];
+const EXAMPLES = ["loopycases.com", "kyliecosmetics.com", "apple.com", "ploy.ai"];
 
+/** The home page's card: the URL form with its heading. */
 export function StartCampaignForm() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-lg">Paste your website URL</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <StartCampaignFields />
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * The URL field, Start Campaign and the example stores. Shared by the home
+ * card and the New campaign dialog; on success the action redirects to the
+ * new campaign, which also closes the dialog.
+ */
+export function StartCampaignFields() {
   const [state, formAction, pending] = useActionState<StartCampaignState, FormData>(
     startCampaign,
     {},
@@ -25,69 +44,64 @@ export function StartCampaignForm() {
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-lg">Paste your website URL</CardTitle>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        <form ref={formRef} action={formAction} className="flex flex-col gap-2 sm:flex-row">
-          <div className="relative flex-1">
-            <Link2Icon className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              ref={inputRef}
-              name="url"
-              type="text"
-              inputMode="url"
-              autoComplete="url"
-              spellCheck={false}
-              required
-              aria-label="Store URL"
-              aria-invalid={state.error ? true : undefined}
-              aria-describedby={state.error ? "start-campaign-error" : undefined}
-              placeholder="https://yourstore.com"
-              defaultValue={state.url}
-              disabled={pending}
-              className="h-11 rounded-full pl-10 text-base md:text-sm"
-            />
-          </div>
-          <Button type="submit" size="lg" className="h-11 px-5" disabled={pending}>
-            {pending ? (
-              <>
-                <Loader2Icon className="animate-spin" />
-                Starting…
-              </>
-            ) : (
-              <>
-                Start Campaign
-                <ArrowRightIcon />
-              </>
-            )}
-          </Button>
-        </form>
+    <div className="flex flex-col gap-3">
+      <form ref={formRef} action={formAction} className="flex flex-col gap-2 sm:flex-row">
+        <div className="relative flex-1">
+          <Link2Icon className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            ref={inputRef}
+            name="url"
+            type="text"
+            inputMode="url"
+            autoComplete="url"
+            spellCheck={false}
+            required
+            aria-label="Store URL"
+            aria-invalid={state.error ? true : undefined}
+            aria-describedby={state.error ? "start-campaign-error" : undefined}
+            placeholder="https://yourstore.com"
+            defaultValue={state.url}
+            disabled={pending}
+            className="h-11 rounded-full pl-10 text-base md:text-sm"
+          />
+        </div>
+        <Button type="submit" size="lg" className="h-11 px-5" disabled={pending}>
+          {pending ? (
+            <>
+              <Loader2Icon className="animate-spin" />
+              Starting…
+            </>
+          ) : (
+            <>
+              Start Campaign
+              <ArrowRightIcon />
+            </>
+          )}
+        </Button>
+      </form>
 
-        {state.error ? (
-          <p id="start-campaign-error" className="flex items-center gap-2 text-sm text-destructive">
-            <AlertCircleIcon className="size-4 shrink-0" />
-            {state.error}
-          </p>
-        ) : (
-          <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-            <span>Try</span>
-            {EXAMPLES.map((example) => (
-              <Button
-                key={example}
-                type="button"
-                variant="secondary"
-                size="sm"
-                disabled={pending}
-                onClick={() => tryExample(example)}
-              >
-                {example}
-              </Button>
-            ))}
-          </div>
-        )}
-      </CardContent>
-    </Card>
+      {state.error ? (
+        <p id="start-campaign-error" className="flex items-center gap-2 text-sm text-destructive">
+          <AlertCircleIcon className="size-4 shrink-0" />
+          {state.error}
+        </p>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+          <span>Try</span>
+          {EXAMPLES.map((example) => (
+            <Button
+              key={example}
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={pending}
+              onClick={() => tryExample(example)}
+            >
+              {example}
+            </Button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

@@ -45,6 +45,10 @@ import { RESEARCH_TOOL_PARTS, type AdIdea, type AgentUIMessage } from "@/lib/age
 import type { SavedAd, SavedHeadline } from "@/lib/campaigns";
 import type { CatalogItem } from "@/lib/research/types";
 
+/** The product question's answers: white pills that turn ink on hover, none singled out. */
+const INVERT_ON_HOVER =
+  "hover:border-primary hover:bg-primary hover:text-primary-foreground dark:hover:bg-primary dark:hover:text-primary-foreground";
+
 /** What the cards need: saved headlines and products, and how to answer each card. */
 export type HeadlineControls = {
   saved: SavedHeadline[];
@@ -169,15 +173,25 @@ export function CampaignChat({
                             <p className="text-sm font-medium">{part.input.question}</p>
                             {waiting && (
                               <div className="flex flex-wrap gap-2">
-                                <Button size="sm" onClick={() => headlines.onPickProducts(part.toolCallId)}>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className={INVERT_ON_HOVER}
+                                  onClick={() => headlines.onPickProducts(part.toolCallId)}
+                                >
                                   <PackageSearchIcon />
                                   Pick in Products
                                 </Button>
-                                <Button size="sm" variant="outline" onClick={() => headlines.onLetPloyChoose(part.toolCallId)}>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className={INVERT_ON_HOVER}
+                                  onClick={() => headlines.onLetPloyChoose(part.toolCallId)}
+                                >
                                   <SparklesIcon />
                                   Let Ploy choose
                                 </Button>
-                                <Button size="sm" variant="ghost" onClick={headlines.onTypeProducts}>
+                                <Button size="sm" variant="outline" className={INVERT_ON_HOVER} onClick={headlines.onTypeProducts}>
                                   <KeyboardIcon />
                                   Type a product or send a link
                                 </Button>

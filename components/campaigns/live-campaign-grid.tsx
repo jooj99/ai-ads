@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
 import { DeleteCampaignButton } from "@/components/campaigns/delete-campaign-button";
+import { NewCampaignDialog } from "@/components/campaigns/new-campaign-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -119,12 +120,12 @@ export function LiveCampaignGrid({ campaigns }: { campaigns: CampaignSummary[] }
           </span>
           <p className="font-medium">No campaigns yet</p>
           <p className="max-w-sm text-sm text-muted-foreground">
-            Paste a store URL on Home and the agent will research the brand and pick the products
-            to advertise.
+            Paste a store URL and the agent will research the brand and pick the products to
+            advertise.
           </p>
-          <Button asChild className="mt-2">
-            <Link href="/">Start a campaign</Link>
-          </Button>
+          <NewCampaignDialog>
+            <Button className="mt-2">Start a campaign</Button>
+          </NewCampaignDialog>
         </CardContent>
       </Card>
     );

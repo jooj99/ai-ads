@@ -1,11 +1,9 @@
-import { ArrowRightIcon } from "lucide-react";
 import type { Metadata } from "next";
-import Link from "next/link";
 import { connection } from "next/server";
 import { Suspense } from "react";
 
 import { LiveCampaignGrid } from "@/components/campaigns/live-campaign-grid";
-import { Button } from "@/components/ui/button";
+import { NewCampaignDialog } from "@/components/campaigns/new-campaign-dialog";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { listCampaigns } from "@/lib/campaigns";
@@ -23,12 +21,7 @@ export default function CampaignsPage() {
             Each campaign starts from a store URL and holds its brand kit, products and ads.
           </p>
         </div>
-        <Button asChild>
-          <Link href="/">
-            New campaign
-            <ArrowRightIcon />
-          </Link>
-        </Button>
+        <NewCampaignDialog />
       </div>
       <Suspense fallback={<ListSkeleton />}>
         <CampaignList />

@@ -1,9 +1,4 @@
-import {
-  HouseIcon,
-  MegaphoneIcon,
-  SettingsIcon,
-  type LucideIcon,
-} from "lucide-react";
+import { HouseIcon, MegaphoneIcon, type LucideIcon } from "lucide-react";
 
 export type NavItem = {
   title: string;
@@ -15,7 +10,6 @@ export type NavItem = {
 export const mainNav: NavItem[] = [
   { title: "Home", href: "/", icon: HouseIcon },
   { title: "Campaigns", href: "/campaigns", icon: MegaphoneIcon },
-  { title: "Settings", href: "/settings", icon: SettingsIcon },
 ];
 
 /** The nav item that owns a pathname, so nested routes keep their tab active. */
