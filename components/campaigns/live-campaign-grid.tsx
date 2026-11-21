@@ -3,7 +3,7 @@
 /* eslint-disable @next/next/no-img-element -- campaign logos come from each store's own CDN. */
 
 import { Loader2Icon, MegaphoneIcon } from "lucide-react";
-import Link from "next/link";
+import Link, { useLinkStatus } from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
@@ -22,6 +22,25 @@ const STATUS_LABEL: Record<CampaignStatus, string> = {
   ready: "Brand kit ready",
 };
 
+/**
+ * Covers the clicked card with a spinner until the campaign page takes over
+ * (when its page wasn't prefetched yet), so the click answers at once. Always
+ * rendered and faded in, so the card never shifts.
+ */
+function OpeningOverlay() {
+  const { pending } = useLinkStatus();
+  return (
+    <span
+      aria-hidden
+      className={`pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-card/70 transition-opacity duration-150 ${
+        pending ? "opacity-100" : "opacity-0"
+      }`}
+    >
+      <Loader2Icon className="size-5 animate-spin text-muted-foreground" />
+    </span>
+  );
+}
+
 /** Server re-reads (new campaigns, finished runs) at most this often. */
 const REFRESH_EVERY_MS = 1_000;
 
@@ -38,6 +57,18 @@ export function LiveCampaignGrid({ campaigns }: { campaigns: CampaignSummary[] }
   // they never overwrite a research change, and vice versa).
   const [adChanges, setAdChanges] = useState<Record<string, { ads: AdActivity; at: string }>>({});
   const lastRefresh = useRef(0);
+
+  // Load the campaign page's code while the list is idle, so opening a
+  // campaign doesn't wait to download it (~340 KB) after the click.
+  useEffect(() => {
+    const warm = () => void import("@/components/campaigns/campaign-workspace").catch(() => {});
+    if ("requestIdleCallback" in window) {
+      const handle = requestIdleCallback(warm, { timeout: 3000 });
+      return () => cancelIdleCallback(handle);
+    }
+    const timer = setTimeout(warm, 1500);
+    return () => clearTimeout(timer);
+  }, []);
   const subscribedBefore = useRef(false);
   // Ids already loaded; a broadcast about any other id means a new campaign.
   const known = useRef(new Set<string>());
@@ -137,8 +168,9 @@ export function LiveCampaignGrid({ campaigns }: { campaigns: CampaignSummary[] }
         <li key={c.id} className="group relative">
           <Link
             href={`/campaigns/${c.id}`}
-            className="group flex h-full flex-col gap-4 rounded-xl bg-card p-4 ring-1 ring-foreground/10 transition-shadow hover:ring-foreground/25"
+            className="group relative flex h-full flex-col gap-4 rounded-xl bg-card p-4 ring-1 ring-foreground/10 transition-shadow hover:ring-foreground/25 active:ring-foreground/40"
           >
+            <OpeningOverlay />
             <div className="flex items-center gap-3">
               <span className="flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white p-1.5 ring-1 ring-foreground/10">
                 {c.logo ? (

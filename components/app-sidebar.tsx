@@ -1,6 +1,7 @@
 "use client";
 
-import Link from "next/link";
+import { Loader2Icon } from "lucide-react";
+import Link, { useLinkStatus } from "next/link";
 import { usePathname } from "next/navigation";
 import { Suspense, type ReactNode } from "react";
 
@@ -24,6 +25,16 @@ import { mainNav, navItemFor, type NavItem } from "@/lib/nav";
 const navButtonClass =
   "h-9 rounded-full px-3 font-medium text-sidebar-foreground/80 data-active:bg-sidebar-primary data-active:text-sidebar-primary-foreground data-active:hover:bg-sidebar-primary data-active:hover:text-sidebar-primary-foreground";
 
+/**
+ * The nav item's icon, or a spinner from the moment it's clicked until the
+ * new page takes over (when the page wasn't prefetched yet), so a click
+ * always answers at once. Same size, so nothing shifts.
+ */
+function NavIcon({ icon: Icon }: { icon: NavItem["icon"] }) {
+  const { pending } = useLinkStatus();
+  return pending ? <Loader2Icon className="animate-spin" /> : <Icon />;
+}
+
 function NavLinks({ items, activeHref }: { items: NavItem[]; activeHref?: string }) {
   const { isMobile, setOpenMobile } = useSidebar();
 
@@ -38,7 +49,7 @@ function NavLinks({ items, activeHref }: { items: NavItem[]; activeHref?: string
             className={navButtonClass}
           >
             <Link href={item.href} onClick={() => isMobile && setOpenMobile(false)}>
-              <item.icon />
+              <NavIcon icon={item.icon} />
               <span>{item.title}</span>
             </Link>
           </SidebarMenuButton>
