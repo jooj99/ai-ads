@@ -174,11 +174,22 @@ export function extractHtmlSignals(html: string, base: string, externalCss = "")
 
   const isHomeLink = (context: string) =>
     new RegExp(`href=["'](?:/|${escapeRegExp(origin)}/?)["']`, "i").test(context);
+  // A label naming the brand: aria-label or title equal to, or starting with,
+  // the site name ("OpenAI", "OpenAI Home", "Kylie Cosmetics home page").
+  const brandLabel = siteName
+    ? new RegExp(`(?:aria-label|title)=["']${escapeRegExp(siteName)}(?:["']|\\s)`, "i")
+    : null;
   const namesBrand = (context: string) =>
-    LOGO_WORDS.test(context) ||
-    (siteName
-      ? new RegExp(`aria-label=["']${escapeRegExp(siteName)}["']`, "i").test(context)
-      : false);
+    LOGO_WORDS.test(context) || (brandLabel ? brandLabel.test(context) : false);
+  // The <a> an element sits in, wherever its opening tag is: utility-class
+  // markup (Tailwind) can put the link hundreds of characters before it.
+  const enclosingLink = (index: number): string => {
+    const before = html.slice(Math.max(0, index - 4000), index);
+    const opens = [...before.matchAll(/<a\b[^>]*>/gi)];
+    const last = opens.at(-1);
+    if (!last) return "";
+    return /<\/a>/i.test(before.slice(last.index + last[0].length)) ? "" : last[0];
+  };
 
   const logos: LogoCandidate[] = [];
   const add = (raw: string | undefined, via: string, score: number) => {
@@ -190,7 +201,14 @@ export function extractHtmlSignals(html: string, base: string, externalCss = "")
   const ld =
     html.match(/"logo"\s*:\s*"([^"]+)"/)?.[1] ??
     html.match(/"logo"\s*:\s*\{[^}]*"url"\s*:\s*"([^"]+)"/)?.[1];
-  add(ld, "structured data", 10);
+  // Only when it points at an image: some sites declare their homepage URL
+  // as the logo (kyliecosmetics.com), and a favicon is an icon, not a logo.
+  const ldUrl = ld ? absoluteUrl(decode(ld), base) : undefined;
+  const ldPath = ldUrl ? new URL(ldUrl).pathname : "";
+  if (ldUrl && ldPath.replace(/\/$/, "") !== "") {
+    if (/favicon|\.ico$/i.test(ldPath)) add(ldUrl, "structured data (favicon)", 2);
+    else add(ldUrl, "structured data", 10);
+  }
 
   // 2. <img> tags that call themselves a logo.
   for (const m of html.matchAll(/<img\b[^>]*>/gi)) {
@@ -204,7 +222,7 @@ export function extractHtmlSignals(html: string, base: string, externalCss = "")
     const isAlt = siteName ? attr(tag, "alt")?.toLowerCase() === siteName.toLowerCase() : false;
     if (!inSrc && !inAttrs && !isAlt) continue;
     let score = inSrc ? 8 : 7;
-    if (isHomeLink(context) || /<header\b/i.test(context)) score += 2;
+    if (isHomeLink(context) || isHomeLink(enclosingLink(m.index)) || /<header\b/i.test(context)) score += 2;
     if (ICON_WORDS.test(src) && !inSrc) score -= 8;
     add(src, "logo image", score);
   }
@@ -213,9 +231,12 @@ export function extractHtmlSignals(html: string, base: string, externalCss = "")
   //    (recolorable) or as background images, inline or in stylesheets.
   const cssImage =
     /(-webkit-mask(?:-image)?|mask(?:-image)?|background(?:-image)?)\s*:\s*[^;{}]*?url\(\s*(?:&quot;|["'])?([^"')&]+(?:&amp;[^"')&]+)*)(?:&quot;|["'])?\s*\)/gi;
-  const scoreCssImage = (kind: string, url: string, context: string, home: boolean) => {
+  const scoreCssImage = (kind: string, url: string, rawContext: string, home: boolean) => {
     const isMask = /mask/i.test(kind);
     let score = isMask ? 2 : 0;
+    // The context without the image URL: Tailwind puts the URL in the class
+    // name (`.bg-\[url\(…logo…\)\]`), which would count "logo" twice.
+    const context = rawContext.split(url).join("").replace(/\\\[[\s\S]*?\\\]/g, "");
     if (LOGO_WORDS.test(url)) score += 6;
     if (namesBrand(context)) score += 4;
     if (home) score += 3;
@@ -241,14 +262,15 @@ export function extractHtmlSignals(html: string, base: string, externalCss = "")
     if (svg.length > 60_000 || /<use\b/i.test(svg) || !/<path\b/i.test(svg)) continue;
     const openTag = svg.slice(0, svg.indexOf(">") + 1);
     const context = html.slice(Math.max(0, m.index - 300), m.index) + openTag;
-    if (!namesBrand(context) || ICON_WORDS.test(openTag)) continue;
+    const link = enclosingLink(m.index);
+    if (!namesBrand(context + link) || ICON_WORDS.test(openTag)) continue;
     const withNs = /xmlns=/.test(openTag)
       ? svg
       : svg.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
     add(
       `data:image/svg+xml;charset=utf-8,${encodeURIComponent(withNs)}`,
       "inline SVG",
-      isHomeLink(context) ? 9 : 6,
+      isHomeLink(context) || isHomeLink(link) ? 9 : 6,
     );
   }
 
