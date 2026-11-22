@@ -1,3 +1,5 @@
+import "server-only";
+
 import Firecrawl, { type BrandingProfile } from "@mendable/firecrawl-js";
 
 import { noteFirecrawlError } from "@/lib/research/firecrawl-errors";

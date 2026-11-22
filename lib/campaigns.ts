@@ -277,6 +277,35 @@ export async function renameCampaign(id: string, name: string): Promise<void> {
   if (error) throw error;
 }
 
+/**
+ * Makes a run the campaign's active run and records that it belongs to this
+ * campaign (`campaign_runs`), so the chat's stop and reconnect routes can
+ * check a run id against the campaign in their URL. Idempotent.
+ */
+export async function setActiveRun(campaignId: string, runId: string): Promise<void> {
+  if (!UUID.test(campaignId)) throw new Error("Unknown campaign");
+  const db = supabase();
+  const [owned, active] = await Promise.all([
+    db.from("campaign_runs").upsert({ run_id: runId, campaign_id: campaignId }, { onConflict: "run_id" }),
+    db.from("campaigns").update({ agent_run_id: runId }).eq("id", campaignId),
+  ]);
+  if (owned.error) throw owned.error;
+  if (active.error) throw active.error;
+}
+
+/** Whether this agent run was started for this campaign. */
+export async function runBelongsTo(campaignId: string, runId: string): Promise<boolean> {
+  if (!UUID.test(campaignId)) return false;
+  const { data, error } = await supabase()
+    .from("campaign_runs")
+    .select("run_id")
+    .eq("run_id", runId)
+    .eq("campaign_id", campaignId)
+    .maybeSingle();
+  if (error) throw error;
+  return Boolean(data);
+}
+
 /** Deletes the campaign; its brand kit and products go with it (on delete cascade). */
 export async function deleteCampaign(id: string): Promise<void> {
   if (!UUID.test(id)) throw new Error("Unknown campaign");

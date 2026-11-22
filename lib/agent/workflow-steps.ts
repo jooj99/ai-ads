@@ -1,3 +1,5 @@
+import "server-only";
+
 import { createModelCallToUIChunkTransform, type ModelCallStreamPart } from "@ai-sdk/workflow";
 import { generateId, readUIMessageStream } from "ai";
 import { getRun } from "workflow/api";

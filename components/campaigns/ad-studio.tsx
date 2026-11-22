@@ -52,7 +52,7 @@ import {
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Textarea } from "@/components/ui/textarea";
 import { thumbnail } from "@/components/research/brand-kit-view";
-import { sameCopy } from "@/lib/agent/tools";
+import { sameCopy } from "@/lib/agent/ui";
 import { adPreviewUrl } from "@/lib/ads/preview-url";
 import type { AdComment, SavedAd } from "@/lib/campaigns";
 import type { CatalogItem } from "@/lib/research/types";

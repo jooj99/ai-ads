@@ -1,3 +1,5 @@
+import "server-only";
+
 import type { BrandKit, CatalogItem } from "@/lib/research/types";
 import type { IdeaDirection } from "@/lib/agent/tools";
 import { withoutEmoji } from "@/lib/copy";

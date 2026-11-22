@@ -1,3 +1,5 @@
+import "server-only";
+
 import type { Product } from "./types";
 import { publicFetch } from "@/lib/research/public-fetch";
 

@@ -1,3 +1,5 @@
+import "server-only";
+
 import type { AdIssue } from "@/lib/ads/verify";
 
 /**

@@ -1,8 +1,7 @@
 import "server-only";
 
 import { kickoffText, type AgentUIMessage } from "@/lib/agent/tools";
-import { getCampaign, getChat, saveChat } from "@/lib/campaigns";
-import { supabase } from "@/lib/supabase/server";
+import { getCampaign, getChat, saveChat, setActiveRun } from "@/lib/campaigns";
 
 /** The opening message of a research run; its id is tied to the run, so adding it twice is a no-op. */
 export function openingMessage(runId: string, domain: string, again: boolean): AgentUIMessage {
@@ -22,7 +21,7 @@ export function openingMessage(runId: string, domain: string, again: boolean): A
 export async function openResearchThread(campaignId: string, runId: string): Promise<AgentUIMessage[]> {
   const campaign = await getCampaign(campaignId);
   if (!campaign) throw new Error("Campaign not found");
-  await supabase().from("campaigns").update({ agent_run_id: runId }).eq("id", campaignId);
+  await setActiveRun(campaignId, runId);
   const thread = await getChat(campaignId);
   const opening = openingMessage(runId, campaign.domain, thread.some((m) => m.id !== `msg-${runId}`));
   if (thread.some((m) => m.id === opening.id)) return thread;

@@ -1,3 +1,5 @@
+import "server-only";
+
 import type Firecrawl from "@mendable/firecrawl-js";
 
 import { fetchHtml, imagesFromHtml, isImageFragment, mapLimit, type LayoutLink } from "./html-signals";

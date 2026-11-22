@@ -24,7 +24,8 @@ Next.js 16, the AI SDK and AI Elements change faster than training data. Read `n
 - **Auth checks:** every route handler starts with `unauthorized()`, every server action and data page with `requireUser()`; `proxy.ts` alone isn't enough.
 - **Fail gracefully:** a failed tool or service degrades and says why; never dead-end the user.
 - **Workflow steps re-run after a crash:** keep them idempotent (upserts by id). Call ad-flow phases as plain functions, not methods (a method call serializes `this` and the step fails).
-- **Broadcasts** go through `broadcast()` (`lib/broadcast.ts`), which calls `realtime.setAuth()`; without it Supabase returns 202 and delivers nothing.
+- **Broadcasts** go through `broadcast()` (`lib/broadcast.ts`), which calls `realtime.setAuth()`; without it Supabase returns 202 and delivers nothing. Channels are private: open them with `CHANNEL` (`lib/realtime.ts`) and subscribe in the browser with `subscribeSignedIn()` (`lib/supabase/browser.ts`).
+- **Client components import only types from server modules.** Browser-safe helpers live apart (e.g. `lib/agent/ui.ts`, not `lib/agent/tools.ts`); server modules start with `import "server-only"` so a value import fails the build.
 - **Storage egress is limited** (Free plan, 5 GB/month): show ads via their WebP previews, keep working files WebP, and don't hand fal large Supabase URLs (it fetches each about 6 times).
 - **Images from pages:** never use Firecrawl's `images` format (it breaks CDN srcsets); use `rawHtml` + `imagesFromHtml`.
 - **Prompts stay brand-neutral:** no brand-specific examples in skills or rules (a Loopy example made every Loopy ad misuse the product).

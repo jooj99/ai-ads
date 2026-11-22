@@ -43,7 +43,8 @@ import { InputGroupAddon } from "@/components/ui/input-group";
 import { IdeaChoice } from "@/components/campaigns/idea-choice";
 import { stopAdAction } from "@/app/campaigns/actions";
 import { adPreviewUrl } from "@/lib/ads/preview-url";
-import { RESEARCH_TOOL_PARTS, type AdIdea, type AgentUIMessage } from "@/lib/agent/tools";
+import type { AdIdea, AgentUIMessage } from "@/lib/agent/tools";
+import { RESEARCH_TOOL_PARTS } from "@/lib/agent/ui";
 import type { SavedAd, SavedHeadline } from "@/lib/campaigns";
 import type { CatalogItem } from "@/lib/research/types";
 

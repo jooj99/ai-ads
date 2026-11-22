@@ -47,19 +47,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  KIT_TOOL_PARTS,
-  kickoffText,
-  pendingChoice,
-  sameCopy,
-  type AdIdea,
-  type AgentUIMessage,
-  type CampaignCopy,
-} from "@/lib/agent/tools";
+import type { AdIdea, AgentUIMessage, CampaignCopy } from "@/lib/agent/tools";
+import { KIT_TOOL_PARTS, kickoffText, pendingChoice, sameCopy } from "@/lib/agent/ui";
 import type { AdComment, Campaign, SavedAd, SavedHeadline } from "@/lib/campaigns";
-import { campaignTopic, EVENTS } from "@/lib/realtime";
+import { campaignTopic, CHANNEL, EVENTS } from "@/lib/realtime";
 import type { BrandKit, CatalogItem } from "@/lib/research/types";
-import { browserSupabase } from "@/lib/supabase/browser";
+import { browserSupabase, subscribeSignedIn } from "@/lib/supabase/browser";
 
 /** The user's edits to the researched kit: removed colors/fonts, audience tags. */
 type KitEdits = Partial<Pick<BrandKit, "colors" | "fonts" | "audience">>;
@@ -100,22 +93,19 @@ function useCampaignChannel(
     const client = realtime.current;
     if (!client) return;
     const channel = client
-      .channel(campaignTopic(campaignId))
+      .channel(campaignTopic(campaignId), CHANNEL)
       .on("broadcast", { event: EVENTS.finished }, () => router.refresh())
       .on("broadcast", { event: EVENTS.ads }, () => ads())
       .on("broadcast", { event: EVENTS.deleted }, () => deleted())
       .on("broadcast", { event: EVENTS.adStage }, ({ payload }) => {
         const { id, stage: text } = (payload ?? {}) as { id?: string; stage?: string };
         if (id && text) stage(id, text);
-      })
-      // Next keeps this page alive (unsubscribed) while you're elsewhere, so
-      // it missed whatever finished meanwhile: re-read on every (re)subscribe.
-      .subscribe((state) => {
-        if (state === "SUBSCRIBED") ads();
       });
-    return () => {
-      void client.removeChannel(channel);
-    };
+    // Next keeps this page alive (unsubscribed) while you're elsewhere, so
+    // it missed whatever finished meanwhile: re-read on every (re)subscribe.
+    return subscribeSignedIn(client, channel, (state) => {
+      if (state === "SUBSCRIBED") ads();
+    });
   }, [campaignId, router]);
 
   useEffect(() => {

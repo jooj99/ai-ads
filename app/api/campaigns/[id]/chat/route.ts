@@ -4,7 +4,7 @@ import { start } from "workflow/api";
 
 import { withRunFailure } from "@/lib/agent/run-failure";
 import { PAUSE_TOOLS, agentToolSpecs, type AgentUIMessage } from "@/lib/agent/tools";
-import { getCampaign, getChat, saveChat } from "@/lib/campaigns";
+import { getCampaign, getChat, saveChat, setActiveRun } from "@/lib/campaigns";
 import { supabase } from "@/lib/supabase/server";
 import { uploadName } from "@/lib/uploads";
 import { agentTurn } from "@/workflows/agent";
@@ -66,7 +66,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/campaigns/[id]/
   // run adds its reply when it ends.
   await saveChat(id, messages);
   const run = await start(agentTurn, [id, messages]);
-  await db.from("campaigns").update({ agent_run_id: run.runId }).eq("id", id);
+  await setActiveRun(id, run.runId);
 
   return createUIMessageStreamResponse({
     stream: withRunFailure(run.runId, run.readable.pipeThrough(createModelCallToUIChunkTransform())),

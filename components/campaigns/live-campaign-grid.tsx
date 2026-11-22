@@ -13,8 +13,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import type { CampaignStatus, CampaignSummary } from "@/lib/campaigns";
-import { CAMPAIGNS_TOPIC, EVENTS, type AdActivity, type CampaignChange } from "@/lib/realtime";
-import { browserSupabase } from "@/lib/supabase/browser";
+import { CAMPAIGNS_TOPIC, CHANNEL, EVENTS, type AdActivity, type CampaignChange } from "@/lib/realtime";
+import { browserSupabase, subscribeSignedIn } from "@/lib/supabase/browser";
 
 const STATUS_LABEL: Record<CampaignStatus, string> = {
   researching: "Researching",
@@ -90,7 +90,7 @@ export function LiveCampaignGrid({ campaigns }: { campaigns: CampaignSummary[] }
       }, wait);
     };
     const channel = client
-      .channel(CAMPAIGNS_TOPIC)
+      .channel(CAMPAIGNS_TOPIC, CHANNEL)
       .on("broadcast", { event: EVENTS.changed }, ({ payload }) => {
         const change = payload as CampaignChange;
         if (change.ads) {
@@ -109,17 +109,17 @@ export function LiveCampaignGrid({ campaigns }: { campaigns: CampaignSummary[] }
             : { ...current, [change.id]: change },
         );
         if (!known.current.has(change.id) || change.status !== "researching") refreshSoon();
-      })
-      .subscribe((state) => {
-        // Subscribed again after being away (this page stays alive, without
-        // its subscription, while you're on a campaign): re-read what was missed.
-        if (state !== "SUBSCRIBED") return;
-        if (subscribedBefore.current) refreshSoon();
-        subscribedBefore.current = true;
       });
+    const unsubscribe = subscribeSignedIn(client, channel, (state) => {
+      // Subscribed again after being away (this page stays alive, without
+      // its subscription, while you're on a campaign): re-read what was missed.
+      if (state !== "SUBSCRIBED") return;
+      if (subscribedBefore.current) refreshSoon();
+      subscribedBefore.current = true;
+    });
     return () => {
       if (pending) clearTimeout(pending);
-      void client.removeChannel(channel);
+      unsubscribe();
     };
   }, [router]);
 

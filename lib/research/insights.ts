@@ -1,3 +1,5 @@
+import "server-only";
+
 import { Output, streamText } from "ai";
 import { z } from "zod";
 

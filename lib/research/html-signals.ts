@@ -1,3 +1,5 @@
+import "server-only";
+
 import type { BrandColor, BrandFont } from "./types";
 import { absoluteUrl, isPublicHttpUrl } from "./url";
 import { publicFetch } from "@/lib/research/public-fetch";

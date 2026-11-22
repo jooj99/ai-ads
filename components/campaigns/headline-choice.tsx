@@ -7,7 +7,8 @@ import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { sameCopy, type AgentUIMessage, type CampaignCopy } from "@/lib/agent/tools";
+import type { AgentUIMessage, CampaignCopy } from "@/lib/agent/tools";
+import { sameCopy } from "@/lib/agent/ui";
 import type { SavedHeadline } from "@/lib/campaigns";
 import { cn } from "@/lib/utils";
 

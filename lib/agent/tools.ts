@@ -1,3 +1,5 @@
+import "server-only";
+
 import { tool, type InferUITools, type UIMessage } from "ai";
 import { z } from "zod";
 
@@ -476,45 +478,7 @@ export const agentToolSpecs = {
   ...researchToolSpecs,
 };
 
-/** The tools that change the brand kit or catalog; after one runs, the page re-reads them. */
-export const KIT_TOOL_PARTS = new Set([
-  "tool-editBrandText",
-  "tool-editTags",
-  "tool-editColors",
-  "tool-editFonts",
-  ...Object.keys(researchToolSpecs).map((name) => `tool-${name}`),
-]);
-
-/** Research tool part types, for rendering them as research steps in the chat. */
-export const RESEARCH_TOOL_PARTS = new Set(Object.keys(researchToolSpecs).map((name) => `tool-${name}`));
-
 export type AgentUIMessage = UIMessage<never, never, InferUITools<typeof agentToolSpecs>>;
 
-/** The tools that pause the run until the user answers (no server `execute`). */
-export const PAUSE_TOOLS = new Set(["chooseProducts", "proposeIdeas", "proposeHeadlines"]);
-
-/** The question the agent is waiting on (a product pick, an idea card or an old headline card), if the thread is paused on one. */
-export function pendingChoice(messages: AgentUIMessage[]) {
-  const last = messages.at(-1);
-  if (last?.role !== "assistant") return null;
-  for (const part of last.parts) {
-    if (
-      (part.type === "tool-chooseProducts" || part.type === "tool-proposeIdeas" || part.type === "tool-proposeHeadlines") &&
-      part.state === "input-available"
-    ) {
-      return part;
-    }
-  }
-  return null;
-}
-
-/** Same headline and CTA, ignoring case and surrounding spaces. */
-export function sameCopy(a: CampaignCopy, b: CampaignCopy) {
-  const norm = (s: string) => s.trim().toLowerCase();
-  return norm(a.headline) === norm(b.headline) && norm(a.cta) === norm(b.cta);
-}
-
-/** The first message of every thread: what the user asked for by starting a campaign. */
-export function kickoffText(domain: string) {
-  return `Make ads for ${domain}`;
-}
+// Helpers the browser needs too live in ./ui.ts (no tool definitions); re-exported for server code.
+export { KIT_TOOL_PARTS, PAUSE_TOOLS, RESEARCH_TOOL_PARTS, kickoffText, pendingChoice, sameCopy } from "@/lib/agent/ui";

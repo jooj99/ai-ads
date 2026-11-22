@@ -1,12 +1,17 @@
 /**
- * Supabase Realtime broadcast channels for research news. The server
- * (secret key) sends; browsers (publishable key) subscribe. Broadcasts never
- * touch the database tables, which stay locked behind RLS.
+ * Supabase Realtime broadcast channels for live updates. The server (secret
+ * key) sends; signed-in browsers subscribe. Broadcasts never touch the
+ * database tables, which stay locked behind RLS.
  *
- * These are public channels: anyone with the publishable key and a campaign
- * id could listen. Fine for a single-user demo; with auth, switch to private
- * channels authorized by RLS on realtime.messages.
+ * Every channel is private: joining one is checked against RLS on
+ * `realtime.messages` (supabase/migrations/…_private_realtime.sql), which
+ * lets signed-in users receive and nobody but the server send. The
+ * publishable key ships in every browser, so a public channel would let
+ * anyone read campaign names and progress, or post fake updates to open pages.
  */
+
+/** Options every channel is opened with, on the server and in the browser. */
+export const CHANNEL = { config: { private: true } } as const;
 
 /** Every campaign's headline changes, for the Campaigns list. */
 export const CAMPAIGNS_TOPIC = "campaigns";
