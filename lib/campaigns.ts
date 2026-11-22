@@ -539,23 +539,15 @@ export const UNCHECKED = "unchecked";
  */
 export async function dismissAdIssue(campaignId: string, adId: string, issue: string): Promise<void> {
   if (!UUID.test(campaignId) || !UUID.test(adId)) throw new Error("Unknown ad");
-  const db = supabase();
-  const { data, error } = await db
-    .from("campaign_ads")
-    .select("dismissed_issues")
-    .eq("campaign_id", campaignId)
-    .eq("id", adId)
-    .maybeSingle();
+  // One statement (supabase/migrations/…_data_model_hardening.sql), so two
+  // dismissals at once can't overwrite each other.
+  const { data, error } = await supabase().rpc("dismiss_ad_issue", {
+    p_campaign_id: campaignId,
+    p_ad_id: adId,
+    p_issue: issue,
+  });
   if (error) throw error;
   if (!data) throw new Error("That ad doesn't exist any more.");
-  const dismissed = (data.dismissed_issues as string[] | null) ?? [];
-  if (dismissed.includes(issue)) return;
-  const { error: updateError } = await db
-    .from("campaign_ads")
-    .update({ dismissed_issues: [...dismissed, issue] })
-    .eq("campaign_id", campaignId)
-    .eq("id", adId);
-  if (updateError) throw updateError;
 }
 
 /** Stops an ad or edit being made: cancels its image job and its run, and removes it. False when it wasn't being made. */

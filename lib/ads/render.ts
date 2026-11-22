@@ -120,14 +120,30 @@ export async function replaceFailedAd(
     query = retryOf ? query.eq("id", retryOf) : query.eq("headline", headline).eq("cta", cta);
     const { data } = await query.order("created_at", { ascending: false });
     if (!data?.length) return undefined;
-    // Only ads with no other versions (a failed ad never got any).
+    // Only an ad alone under its number. A failed edit whose earlier version
+    // was deleted has no parent either, but its number still belongs to the
+    // ad's other versions: reusing it would file the new ad among them.
     const ids = data.map((r) => r.id as string);
-    const { data: children } = await db.from("campaign_ads").select("parent_id").in("parent_id", ids);
-    const parents = new Set((children ?? []).map((c) => c.parent_id as string));
-    const failed = data.filter((r) => !parents.has(r.id as string));
+    const { data: others, error } = await db
+      .from("campaign_ads")
+      .select("number")
+      .eq("campaign_id", campaignId)
+      .in("number", [...new Set(data.map((r) => r.number as number))])
+      .not("id", "in", `(${ids.join(",")})`);
+    if (error) throw error;
+    const shared = new Set((others ?? []).map((o) => o.number as number));
+    const failed = data.filter((r) => !shared.has(r.number as number));
     if (!failed.length) return undefined;
-    await db.from("campaign_ads").delete().in("id", failed.map((r) => r.id as string));
-    return failed[0].number as number;
+    // The delete is the claim: of two retries at once, only the one whose
+    // delete removed the row takes its number; the other gets a new one.
+    const { data: claimed } = await db
+      .from("campaign_ads")
+      .delete()
+      .in("id", failed.map((r) => r.id as string))
+      .eq("status", "failed")
+      .select("id");
+    const mine = new Set((claimed ?? []).map((c) => c.id as string));
+    return failed.find((r) => mine.has(r.id as string))?.number as number | undefined;
   } catch (error) {
     console.error("[ads] replacing the failed ad failed", error);
     return undefined;
@@ -351,6 +367,30 @@ export async function cancelAd(campaignId: string, adId: string): Promise<boolea
   ]);
   await broadcastAdActivity(campaignId);
   return true;
+}
+
+/**
+ * Stops everything still running for a campaign that's about to be deleted:
+ * its agent run (research or a chat turn) and every ad or edit being made
+ * (their fal jobs and runs). Left alone, they'd keep paying for model calls,
+ * image jobs and page reads for a campaign that's gone, and could write files
+ * into its folder after its storage was cleaned up. Never throws.
+ */
+export async function cancelCampaignWork(campaignId: string): Promise<void> {
+  try {
+    const db = supabase();
+    const [{ data: campaign }, { data: ads }] = await Promise.all([
+      db.from("campaigns").select("agent_run_id").eq("id", campaignId).maybeSingle(),
+      db.from("campaign_ads").select("id").eq("campaign_id", campaignId).eq("status", "generating"),
+    ]);
+    const run = campaign?.agent_run_id as string | null | undefined;
+    await Promise.all([
+      ...(ads ?? []).map((ad) => cancelAd(campaignId, ad.id as string)),
+      run && !run.startsWith("starting-") ? getRun(run).cancel().catch(() => undefined) : undefined,
+    ]);
+  } catch (error) {
+    console.error("[campaigns] stopping the campaign's work before deleting it failed", error);
+  }
 }
 
 /** Marks an ad row failed with the reason. */

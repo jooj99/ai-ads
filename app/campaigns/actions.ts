@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
+import { cancelCampaignWork } from "@/lib/ads/render";
 import { broadcast } from "@/lib/broadcast";
 import { campaignTopic, EVENTS } from "@/lib/realtime";
 import { requireUser } from "@/lib/supabase/auth";
@@ -55,6 +56,9 @@ export async function renameCampaignAction(campaignId: string, name: string): Pr
 export async function deleteCampaignAction(campaignId: string): Promise<ActionResult> {
   await requireUser();
   if (!id.safeParse(campaignId).success) return { ok: false, error: "Unknown campaign." };
+  // Its research or chat run and any ads being made stop first, so nothing
+  // keeps working (and paying) for it or writes files after it's cleaned up.
+  await cancelCampaignWork(campaignId);
   const result = await run(() => deleteCampaign(campaignId), "Couldn't delete the campaign.");
   // Pages still open on it (another tab) show that it's gone.
   if (result.ok) await broadcast(campaignTopic(campaignId), EVENTS.deleted, {});
